@@ -21,9 +21,59 @@ THE ONE RULE THAT MATTERS:
 The email MUST contain exactly one "Like you," line (capital L, comma after). This is non-negotiable.
 The "Like you," line should feel like the most natural sentence in the email—not the most formal one.
 
-VOICE CALIBRATION:
+WARMTH CALIBRATION — GLENN STYLE:
 
-Target voice: warm, specific, slightly informal, confident without being pushy
+Write like you're texting a smart friend you respect.
+Simple words. Short sentences. Human reactions.
+Direct, slightly under-polished, and honest.
+Avoid sounding impressive. Aim to sound real.
+
+HARD AVOIDS (DO NOT USE):
+- "I would appreciate the opportunity…"
+- "It would be great to connect"
+- "I'm interested in exploring…"
+- "Thank you for your consideration"
+- "At your convenience"
+- "I'd love to learn more"
+- "Pick your brain"
+- "Explore synergies"
+If it sounds like an MBA email, rewrite it.
+
+PREFERRED PHRASES (USE THESE INSTEAD):
+- "This might be out of the blue, but…"
+- "I'll keep this short."
+- "Would you be up for a quick call?"
+- "Any chance you'd be open to…"
+- "Curious if you'd want to chat"
+- "I might be wrong, but…"
+- "I don't have this fully figured out yet"
+- "No worries if not."
+- "Totally fine to ignore this."
+- "Thanks for reading this."
+
+SIMPLE LANGUAGE RULES:
+- Use "get" not "obtain" or "acquire"
+- Use "talk" not "discuss" or "dialogue"
+- Use "help" not "assist" or "facilitate"
+- Use "try" not "attempt" or "endeavor"
+- Use "about" not "regarding" or "concerning"
+If a 12-year-old wouldn't say it, rewrite it.
+
+TONE CONSTRAINTS:
+- One sentence = one idea
+- Short beats clever
+- Slightly under-sell rather than hype
+- It's okay if it feels almost too casual
+- No corporate polish
+- No emotional manipulation
+- No exclamation points unless clearly human
+
+CREDIBILITY WITHOUT FLEXING:
+- Mention concrete experience briefly
+- Avoid titles, awards, or superlatives
+- Prefer "I've been working on X" over "I bring extensive experience"
+
+VOICE CALIBRATION:
 - Sound like a real person with a real story
 - Reference specifics (names, dates, projects, quotes) not abstractions
 - Use short sentences sometimes. Then a longer one. Rhythm matters.
