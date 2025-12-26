@@ -6,11 +6,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PROMPT_VERSION = 'v6.0-exa-only';
+const PROMPT_VERSION = 'v7.0-hook-packs';
 const MODEL_NAME = 'google/gemini-2.5-flash';
 const RESEARCH_MODEL_NAME = 'google/gemini-2.5-flash';
 
-// ============= SUPER PROMPT (Updated for V2) =============
+// ============= SUPER PROMPT (Updated for V2 Hook Packs) =============
 const SUPER_PROMPT = `You are an expert writing coach who crafts short, vivid, highly personalized cold emails.
 Your job is to use the sender's inputs AND any researched information about the recipient to write a warm, confident, memorable email that a busy person will actually read and respond to.
 
@@ -38,7 +38,7 @@ HOW TO WRITE THE "Like you," LINE:
 - The "Like you," sentence should appear in the first or second paragraph
 
 RESEARCH USAGE RULES:
-- If researched facts are provided, use at most 1–2 facts
+- If Hook Packs with "Like you" bridges are provided, use the suggested bridge line as inspiration
 - Use facts as anchors for a parallel or question, not as praise or résumé summary
 - Do NOT summarize the recipient's career or list accomplishments
 - If facts are empty or no real research was found, do NOT imply you did research
@@ -79,7 +79,77 @@ DO NOT EVER:
 - Use "Like you," more than once
 - Include a name after the sign-off`;
 
-// ============= VALIDATOR =============
+// ============= TYPES =============
+
+type AskType = "chat" | "feedback" | "referral" | "job" | "other";
+type BridgeAngle = 'domain' | 'value' | 'tradeoff' | 'artifact' | 'inflection' | 'shared-affiliation';
+
+interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+  likeYouCount: number;
+  wordCount: number;
+  clicheCount: number;
+}
+
+interface HookPack {
+  hook_fact: {
+    claim: string;
+    source_url: string;
+    evidence: string;
+  };
+  bridge: {
+    like_you_line: string;
+    bridge_angle: BridgeAngle;
+    why_relevant: string;
+  };
+  scores: {
+    identity_conf: number;
+    non_generic: number;
+    bridgeability: number;
+    overall: number;
+  };
+}
+
+interface IdentityFingerprint {
+  canonical_name: string;
+  company: string;
+  role_keywords: string[];
+  disambiguators: string[];
+  confounders: { name: string; negative_keywords: string[] }[];
+}
+
+interface BridgeHypothesis {
+  type: 'domain' | 'value' | 'tradeoff';
+  keywords: string[];
+  query_templates: string[];
+  proof_target: string;
+}
+
+interface ExaResult {
+  url: string;
+  title: string;
+  snippet: string;
+  text?: string;
+  score?: number;
+}
+
+interface CandidateUrl {
+  url: string;
+  title: string;
+  text: string;
+  passed_niche_gate: boolean;
+  reasons: string[];
+  identity_locked: boolean;
+}
+
+interface EnforcementResults {
+  did_retry: boolean;
+  failures_first_pass: string[];
+  failures_retry: string[];
+}
+
+// ============= VALIDATION CONSTANTS =============
 
 const BANNED_CLICHES = [
   "i'm reaching out because",
@@ -106,415 +176,554 @@ const GENERIC_LIKE_YOU_PATTERNS = [
   "deeply appreciate",
 ];
 
-interface ValidationResult {
-  valid: boolean;
-  errors: string[];
-  likeYouCount: number;
-  wordCount: number;
-  clicheCount: number;
+// ============= STAGE 1: IDENTITY FINGERPRINT =============
+
+async function extractIdentityFingerprint(
+  recipientName: string,
+  recipientCompany: string,
+  recipientRole: string,
+  identityResults: ExaResult[],
+  LOVABLE_API_KEY: string
+): Promise<{ fingerprint: IdentityFingerprint; confidence: number }> {
+  console.log('=== Stage 1B: Extract Identity Fingerprint via LLM ===');
+  
+  if (identityResults.length === 0) {
+    return {
+      fingerprint: {
+        canonical_name: recipientName,
+        company: recipientCompany,
+        role_keywords: recipientRole.toLowerCase().split(/\s+/).filter(w => w.length > 2),
+        disambiguators: [],
+        confounders: [],
+      },
+      confidence: 0.3,
+    };
+  }
+  
+  const sourcesContext = identityResults.slice(0, 3).map((r, i) => `
+SOURCE ${i + 1}: ${r.url}
+Title: ${r.title}
+Content: ${(r.text || r.snippet || '').substring(0, 1500)}
+`).join('\n---\n');
+
+  const extractionPrompt = `Analyze these search results about "${recipientName}" at "${recipientCompany}" (${recipientRole}).
+
+${sourcesContext}
+
+Extract an IDENTITY FINGERPRINT to help disambiguate this person from others with similar names.
+
+Return JSON:
+{
+  "canonical_name": "The full name as it appears most often (e.g., 'Christopher Young' vs 'Chris Young')",
+  "company": "${recipientCompany}",
+  "role_keywords": ["key", "role", "terms"],
+  "disambiguators": ["unique identifiers: product areas, prior companies, business units, geography, initiatives they're known for"],
+  "confounders": [
+    {
+      "name": "Name of any OTHER person with same name found in results",
+      "negative_keywords": ["keywords", "that", "identify", "wrong", "person"]
+    }
+  ],
+  "identity_confidence": 0.0
 }
 
-interface HookFact {
-  claim: string;
-  source_url: string;
-  evidence_quote: string;
-  why_relevant: string;
-  bridge_type: 'intent' | 'credibility' | 'curiosity';
-  hook_score: number;
+The "disambiguators" should be 3-8 terms that UNIQUELY identify this person (not generic terms).
+The "confounders" should capture any OTHER people with the same name that appeared in results.
+"identity_confidence" should be 0.0-1.0 based on how confident you are this is the right person.
+
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await callLLM(
+      LOVABLE_API_KEY,
+      'You extract identity information to disambiguate people with common names.',
+      extractionPrompt,
+      RESEARCH_MODEL_NAME
+    );
+    
+    const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    
+    return {
+      fingerprint: {
+        canonical_name: parsed.canonical_name || recipientName,
+        company: parsed.company || recipientCompany,
+        role_keywords: parsed.role_keywords || [],
+        disambiguators: parsed.disambiguators || [],
+        confounders: parsed.confounders || [],
+      },
+      confidence: parsed.identity_confidence || 0.5,
+    };
+  } catch (e) {
+    console.error('Failed to extract identity fingerprint:', e);
+    return {
+      fingerprint: {
+        canonical_name: recipientName,
+        company: recipientCompany,
+        role_keywords: recipientRole.toLowerCase().split(/\s+/).filter(w => w.length > 2),
+        disambiguators: [],
+        confounders: [],
+      },
+      confidence: 0.3,
+    };
+  }
 }
 
-interface ExaResult {
-  url: string;
-  title: string;
-  snippet: string;
-  text?: string;
-  score?: number;
+// ============= STAGE 2: BRIDGE HYPOTHESES =============
+
+async function generateBridgeHypotheses(
+  reachingOutBecause: string,
+  credibilityStory: string,
+  recipientRole: string,
+  recipientCompany: string,
+  LOVABLE_API_KEY: string
+): Promise<BridgeHypothesis[]> {
+  console.log('=== Stage 2: Generate Bridge Hypotheses ===');
+  
+  const prompt = `Generate 3 "bridge hypotheses" for a cold email connection.
+
+SENDER CONTEXT:
+- Why reaching out: "${reachingOutBecause}"
+- Credibility story: "${credibilityStory}"
+
+RECIPIENT:
+- Role: ${recipientRole} at ${recipientCompany}
+
+A "bridge hypothesis" is a theory about what shared ground might connect sender to recipient.
+
+Generate exactly 3 hypotheses:
+1. DOMAIN bridge: shared work/problem space
+2. VALUE bridge: shared motivation (inclusion, craftsmanship, resilience, etc.)
+3. TRADEOFF bridge: shared tension (scaling quality vs speed, adoption vs trust, etc.)
+
+For each hypothesis, provide:
+- type: "domain", "value", or "tradeoff"
+- keywords: 5-10 search keywords that would find evidence of this bridge
+- query_templates: 2-3 Exa search query templates (use {name} and {company} as placeholders)
+- proof_target: what would count as proof this bridge exists
+
+Return JSON:
+{
+  "hypotheses": [
+    {
+      "type": "domain",
+      "keywords": ["keyword1", "keyword2", ...],
+      "query_templates": [
+        "\"{name}\" {company} interview keyword1 keyword2",
+        "\"{name}\" {company} podcast keyword1"
+      ],
+      "proof_target": "Recipient has spoken about X or built Y"
+    },
+    ...
+  ]
 }
 
-interface EnforcementResults {
-  did_retry: boolean;
-  failures_first_pass: string[];
-  failures_retry: string[];
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await callLLM(
+      LOVABLE_API_KEY,
+      'You generate strategic hypotheses for cold email personalization.',
+      prompt,
+      RESEARCH_MODEL_NAME
+    );
+    
+    const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    
+    return (parsed.hypotheses || []).slice(0, 3);
+  } catch (e) {
+    console.error('Failed to generate bridge hypotheses:', e);
+    
+    // Fallback: simple keyword-based hypotheses
+    const domainKeywords = extractSimpleKeywords(reachingOutBecause);
+    const valueKeywords = extractSimpleKeywords(credibilityStory);
+    
+    return [
+      {
+        type: 'domain',
+        keywords: domainKeywords.slice(0, 5),
+        query_templates: [`"{name}" {company} interview ${domainKeywords[0] || ''}`],
+        proof_target: 'Recipient has discussed similar domain topics',
+      },
+      {
+        type: 'value',
+        keywords: valueKeywords.slice(0, 5),
+        query_templates: [`"{name}" {company} talk ${valueKeywords[0] || ''}`],
+        proof_target: 'Recipient shares similar values or motivations',
+      },
+      {
+        type: 'tradeoff',
+        keywords: ['decision', 'tradeoff', 'challenge', 'pivot'],
+        query_templates: [`"{name}" {company} decision challenge`],
+        proof_target: 'Recipient has faced similar tradeoffs',
+      },
+    ];
+  }
 }
 
-// ============= QUERY PLAN TYPES =============
-type AskType = "chat" | "feedback" | "referral" | "job" | "other";
-
-interface QueryPlan {
-  queries: string[];
-  intent_keywords: string[];
-  intent_angle: string;
-}
-
-interface ResearchDebug {
-  queryPlan: QueryPlan;
-  queriesUsed: string[];
-  urlScores: { url: string; title: string; score: number; reasons: string[] }[];
-  urlsFetched: string[];
-  factRejectionReasons?: string[];
-  notes?: string;
-}
-
-// ============= KEYWORD EXTRACTION =============
-
-const STOPWORDS = new Set([
-  'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she', 'it', 'they', 'them',
-  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'then', 'so', 'as', 'at', 'by',
-  'for', 'in', 'of', 'on', 'to', 'with', 'from', 'up', 'down', 'is', 'are',
-  'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does',
-  'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
-  'this', 'that', 'these', 'those', 'what', 'which', 'who', 'how', 'when',
-  'where', 'why', 'all', 'each', 'every', 'both', 'few', 'more', 'most',
-  'other', 'some', 'such', 'no', 'not', 'only', 'same', 'than', 'too', 'very',
-  'just', 'also', 'now', 'here', 'there', 'about', 'into', 'over', 'after',
-  'before', 'between', 'under', 'again', 'further', 'once', 'during', 'out',
-  'through', 'because', 'while', 'although', 'though', 'since', 'until',
-  'unless', 'however', 'therefore', 'thus', 'hence', 'etc', 'like', 'want',
-  'need', 'get', 'got', 'getting', 'make', 'made', 'making', 'take', 'took',
-  'taking', 'know', 'knew', 'knowing', 'think', 'thought', 'thinking', 'see',
-  'saw', 'seeing', 'come', 'came', 'coming', 'go', 'went', 'going', 'look',
-  'looking', 'use', 'using', 'find', 'finding', 'give', 'giving', 'tell',
-  'telling', 'ask', 'asking', 'work', 'working', 'seem', 'seeming', 'feel',
-  'feeling', 'try', 'trying', 'leave', 'leaving', 'call', 'calling', 'keep',
-  'keeping', 'let', 'letting', 'begin', 'beginning', 'show', 'showing',
-  'hear', 'hearing', 'play', 'playing', 'run', 'running', 'move', 'moving',
-  'live', 'living', 'believe', 'believing', 'bring', 'bringing', 'happen',
-  'write', 'writing', 'provide', 'sit', 'stand', 'lose', 'pay', 'meet',
-  'include', 'continue', 'set', 'learn', 'change', 'lead', 'understand',
-  'watch', 'follow', 'stop', 'create', 'speak', 'read', 'allow', 'add',
-  'spend', 'grow', 'open', 'walk', 'win', 'offer', 'remember', 'love',
-  'consider', 'appear', 'buy', 'wait', 'serve', 'die', 'send', 'expect',
-  'build', 'stay', 'fall', 'cut', 'reach', 'kill', 'remain', 'suggest',
-  'raise', 'pass', 'sell', 'require', 'report', 'decide', 'pull'
-]);
-
-const GENERIC_WORDS = new Set([
-  'help', 'advice', 'connect', 'career', 'journey', 'growth', 'success',
-  'opportunity', 'excited', 'interested', 'learn', 'explore', 'discuss',
-  'chat', 'talk', 'meeting', 'call', 'share', 'insights', 'thoughts',
-  'perspective', 'experience', 'background', 'story', 'path', 'role',
-  'position', 'company', 'team', 'organization', 'industry', 'space',
-  'field', 'area', 'sector', 'market', 'world', 'way', 'things', 'stuff',
-  'people', 'person', 'someone', 'anyone', 'everyone', 'years', 'time',
-  'today', 'tomorrow', 'week', 'month', 'year', 'future', 'past', 'current',
-  'new', 'old', 'great', 'good', 'best', 'better', 'big', 'small', 'first',
-  'last', 'next', 'different', 'important', 'able', 'right', 'high', 'long',
-  'little', 'own', 'young', 'sure', 'real', 'possible', 'possible', 'public',
-  'early', 'late', 'hard', 'major', 'general', 'local', 'certain', 'clear'
-]);
-
-function extractKeywords(text: string): string[] {
-  // Tokenize: split on whitespace and punctuation, lowercase
-  const tokens = text.toLowerCase()
-    .replace(/[^\w\s\-\/]/g, ' ')
+function extractSimpleKeywords(text: string): string[] {
+  const stopwords = new Set(['i', 'me', 'my', 'we', 'our', 'you', 'your', 'the', 'a', 'an', 'and', 'or', 'but', 'to', 'for', 'of', 'in', 'on', 'at', 'by', 'with', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those', 'it', 'its']);
+  
+  return text.toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
-    .filter(t => t.length > 2);
-  
-  // Extract phrases (2-3 word combinations that might be meaningful)
-  const phrases: string[] = [];
-  const words = text.toLowerCase().split(/\s+/);
-  for (let i = 0; i < words.length - 1; i++) {
-    const w1 = words[i].replace(/[^\w\-]/g, '');
-    const w2 = words[i + 1].replace(/[^\w\-]/g, '');
-    if (w1.length > 2 && w2.length > 2 && !STOPWORDS.has(w1) && !STOPWORDS.has(w2)) {
-      phrases.push(`${w1} ${w2}`);
-    }
-  }
-  
-  // Filter tokens
-  const filtered = tokens.filter(t => 
-    !STOPWORDS.has(t) && 
-    !GENERIC_WORDS.has(t) &&
-    t.length > 2
-  );
-  
-  // Dedupe and prioritize
-  const seen = new Set<string>();
-  const result: string[] = [];
-  
-  // Add phrases first (more specific)
-  for (const p of phrases) {
-    if (!seen.has(p) && result.length < 10) {
-      seen.add(p);
-      result.push(p);
-    }
-  }
-  
-  // Then single words
-  for (const w of filtered) {
-    if (!seen.has(w) && result.length < 15) {
-      seen.add(w);
-      result.push(w);
-    }
-  }
-  
-  return result;
+    .filter(w => w.length > 3 && !stopwords.has(w))
+    .slice(0, 10);
 }
 
-function determineIntentAngle(keywords: string[]): string {
-  const keywordStr = keywords.join(' ').toLowerCase();
-  
-  if (keywordStr.match(/scale|growth|market|expand|international|global|latam|emea|apac/)) {
-    return 'shared scaling challenge';
-  }
-  if (keywordStr.match(/regulated|compliance|privacy|security|audit|legal|policy/)) {
-    return 'shared regulatory constraint';
-  }
-  if (keywordStr.match(/ai|ml|machine learning|automation|data|analytics/)) {
-    return 'shared technical domain';
-  }
-  if (keywordStr.match(/founder|startup|build|launch|ship|product/)) {
-    return 'shared builder experience';
-  }
-  if (keywordStr.match(/ops|operations|process|efficiency|workflow/)) {
-    return 'shared operational focus';
-  }
-  if (keywordStr.match(/mission|impact|underrepresented|diversity|social/)) {
-    return 'shared mission/value';
-  }
-  if (keywordStr.match(/pivot|transition|career|decision|tradeoff/)) {
-    return 'shared moment/decision';
-  }
-  
-  return 'shared domain problem';
-}
+// ============= STAGE 3: CANDIDATE DISCOVERY =============
 
-// ============= QUERY PLAN BUILDER (WITH DISAMBIGUATION) =============
-
-function buildExaQueryPlan(input: {
-  recipientName: string;
-  recipientCompany: string;
-  recipientRole: string;
-  reachingOutBecause: string;
-  credibilityStory: string;
-  askType: AskType;
-}): QueryPlan {
-  const { recipientName, recipientCompany, recipientRole, reachingOutBecause, credibilityStory } = input;
+async function discoverCandidates(
+  recipientName: string,
+  fingerprint: IdentityFingerprint,
+  hypotheses: BridgeHypothesis[],
+  exaApiKey: string
+): Promise<{ candidates: ExaResult[]; queriesUsed: string[] }> {
+  console.log('=== Stage 3: Candidate Discovery ===');
   
-  // Extract keywords from sender intent
-  const reasonKeywords = extractKeywords(reachingOutBecause).slice(0, 8);
-  const storyKeywords = extractKeywords(credibilityStory).slice(0, 5);
-  const intentKeywords = [...new Set([...reasonKeywords, ...storyKeywords])].slice(0, 10);
+  const queriesUsed: string[] = [];
+  const allResults: ExaResult[] = [];
+  const seenUrls = new Set<string>();
   
-  const intentAngle = determineIntentAngle(intentKeywords);
+  // Build confounder negation string
+  const negations = fingerprint.confounders
+    .flatMap(c => c.negative_keywords.slice(0, 2))
+    .map(k => `-${k}`)
+    .join(' ');
   
-  console.log('Intent keywords:', intentKeywords);
-  console.log('Intent angle:', intentAngle);
+  // Run max 2 queries per hypothesis, cap at 6 total
+  let queryCount = 0;
+  const MAX_QUERIES = 6;
   
-  const queries: string[] = [];
-  
-  // Get top 2 keywords for query building
-  const kw1 = intentKeywords[0] || '';
-  const kw2 = intentKeywords[1] || '';
-  const kwPhrase = intentKeywords.find(k => k.includes(' ')) || '';
-  
-  // CRITICAL: All niche queries now include company for disambiguation
-  // Tier A: Long-form / opinion / interview content (with company)
-  if (kw1) {
-    queries.push(`"${recipientName}" ${recipientCompany} interview ${kw1}${kw2 ? ' ' + kw2 : ''}`);
-  }
-  if (kw1) {
-    queries.push(`"${recipientName}" ${recipientCompany} podcast ${kw1}`);
-  }
-  if (kw1) {
-    queries.push(`"${recipientName}" ${recipientCompany} talk OR keynote ${kw1}`);
-  }
-  if (kw1) {
-    queries.push(`"${recipientName}" ${recipientCompany} wrote OR essay ${kw1}`);
-  }
-  if (kwPhrase) {
-    queries.push(`"${recipientName}" ${recipientCompany} "${kwPhrase}"`);
-  }
-  
-  // Tier B: Initiative / project angle (with company)
-  if (kw1) {
-    queries.push(`"${recipientName}" ${recipientCompany} ${kw1} initiative OR program`);
-  }
-  
-  // Dedupe and limit to 6 queries
-  const uniqueQueries = [...new Set(queries)].slice(0, 6);
-  
-  return {
-    queries: uniqueQueries,
-    intent_keywords: intentKeywords,
-    intent_angle: intentAngle,
-  };
-}
-
-// ============= IDENTITY ANCHOR QUERIES =============
-
-function buildIdentityQueries(recipientName: string, recipientCompany: string, recipientRole: string): string[] {
-  // These queries are meant to be CORRECT, not niche
-  // They establish who the person is before we search for niche content
-  return [
-    `"${recipientName}" ${recipientCompany} ${recipientRole}`,
-    `"${recipientName}" ${recipientCompany} executive biography`,
-  ];
-}
-
-// ============= IDENTITY VALIDATION =============
-
-interface IdentityScoreResult {
-  score: number;
-  reasons: string[];
-  isIdentityMatch: boolean;
-}
-
-function scoreIdentityMatch(
-  url: string, 
-  title: string, 
-  text: string, 
-  recipientCompany: string, 
-  recipientRole: string
-): IdentityScoreResult {
-  const lowerTitle = title.toLowerCase();
-  const lowerText = text.toLowerCase();
-  const lowerCompany = recipientCompany.toLowerCase();
-  const combinedContent = `${lowerTitle} ${lowerText}`;
-  
-  let score = 0;
-  const reasons: string[] = [];
-  
-  // Positive: Company name match
-  if (combinedContent.includes(lowerCompany)) {
-    score += 3;
-    reasons.push(`+3: company match "${recipientCompany}"`);
-  }
-  
-  // Positive: Role keywords match
-  const roleKeywords = recipientRole.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-  for (const keyword of roleKeywords) {
-    if (keyword.length > 3 && combinedContent.includes(keyword)) {
-      score += 2;
-      reasons.push(`+2: role keyword "${keyword}"`);
-      break; // Only count once
-    }
-  }
-  
-  // Negative: Wrong-domain keywords (common disambiguation conflicts)
-  const wrongDomainPatterns = [
-    // Music/entertainment (Chris Young the singer)
-    { patterns: ['country music', 'country singer', 'tour', 'album', 'song', 'lyrics', 'nashville', 'grammy nomination', 'concert'], penalty: -5, desc: 'music industry' },
-    // Sports (common name conflicts)
-    { patterns: ['nfl', 'nba', 'mlb', 'quarterback', 'pitcher', 'drafted', 'touchdown', 'home run'], penalty: -5, desc: 'sports' },
-    // Other entertainment
-    { patterns: ['actor', 'actress', 'movie star', 'hollywood', 'tv show', 'reality tv'], penalty: -4, desc: 'entertainment' },
-  ];
-  
-  for (const { patterns, penalty, desc } of wrongDomainPatterns) {
-    for (const pattern of patterns) {
-      if (combinedContent.includes(pattern) && !combinedContent.includes(lowerCompany)) {
-        score += penalty;
-        reasons.push(`${penalty}: wrong domain "${desc}" (found "${pattern}")`);
-        break;
+  for (const hypothesis of hypotheses) {
+    if (queryCount >= MAX_QUERIES) break;
+    
+    for (const template of hypothesis.query_templates.slice(0, 2)) {
+      if (queryCount >= MAX_QUERIES) break;
+      
+      // Fill in template
+      let query = template
+        .replace('{name}', recipientName)
+        .replace('{company}', fingerprint.company);
+      
+      // Add negations if we have confounders
+      if (negations) {
+        query = `${query} ${negations}`;
+      }
+      
+      queriesUsed.push(query);
+      queryCount++;
+      
+      const results = await exaSearchWithContent(query, exaApiKey, 10);
+      
+      for (const r of results) {
+        if (!seenUrls.has(r.url)) {
+          seenUrls.add(r.url);
+          allResults.push(r);
+        }
       }
     }
   }
   
-  // Threshold: score >= 4 means confident identity match
-  const isIdentityMatch = score >= 4;
-  
-  return { score, reasons, isIdentityMatch };
+  console.log(`Discovered ${allResults.length} candidate URLs from ${queriesUsed.length} queries`);
+  return { candidates: allResults, queriesUsed };
 }
 
-// ============= URL SCORING (NICHE-ENOUGH) =============
+// ============= STAGE 4: NICHE GATE =============
 
-interface UrlScoreResult {
-  score: number;
-  reasons: string[];
-}
-
-function scoreUrl(url: string, title?: string): UrlScoreResult {
+function applyNicheGate(url: string, title: string, snippet: string): { passed: boolean; reasons: string[] } {
   const lowerUrl = url.toLowerCase();
   const lowerTitle = (title || '').toLowerCase();
+  const lowerSnippet = (snippet || '').toLowerCase();
+  const combined = `${lowerTitle} ${lowerSnippet}`;
   
-  let score = 0;
   const reasons: string[] = [];
   
-  // Positive signals (artifacts)
-  const artifactPatterns = [
-    'podcast', 'interview', 'transcript', 'talk', 'keynote', 'panel',
-    'blog', 'essay', 'op-ed', 'newsletter', 'fireside', 'conversation',
-    'wrote', 'writes', 'author'
+  // REJECT patterns (hard no)
+  const rejectPatterns = [
+    { pattern: 'linkedin.com', reason: 'LinkedIn profile' },
+    { pattern: 'wikipedia.org', reason: 'Wikipedia (generic bio)' },
+    { pattern: '/about', reason: 'About page (generic bio)' },
+    { pattern: '/leadership', reason: 'Leadership page (directory)' },
+    { pattern: '/team', reason: 'Team page (directory)' },
+    { pattern: '/board', reason: 'Board page (directory)' },
+    { pattern: '/executive', reason: 'Executive page (generic bio)' },
   ];
   
-  for (const pattern of artifactPatterns) {
-    if (lowerUrl.includes(pattern) || lowerTitle.includes(pattern)) {
-      score += 3;
-      reasons.push(`+3: artifact pattern "${pattern}"`);
-      break;
-    }
-  }
-  
-  // Publication/event sites boost
-  const publicationDomains = [
-    'medium.com', 'substack.com', 'forbes.com', 'techcrunch.com', 'wired.com',
-    'hbr.org', 'mit.edu', 'stanford.edu', 'ycombinator.com', 'firstround.com',
-    'a16z.com', 'sequoia.com', 'nfx.com', 'reforge.com', 'lenny', 'stratechery',
-    'fastcompany.com', 'inc.com', 'entrepreneur.com', 'bloomberg.com',
-    'axios.com', 'protocol.com', 'theinformation.com', 'podcasts', 'youtube.com/watch'
-  ];
-  
-  for (const domain of publicationDomains) {
-    if (lowerUrl.includes(domain)) {
-      score += 2;
-      reasons.push(`+2: publication domain "${domain}"`);
-      break;
-    }
-  }
-  
-  // LinkedIn penalty (but don't block entirely)
-  if (lowerUrl.includes('linkedin.com')) {
-    score -= 5;
-    reasons.push('-5: LinkedIn');
-  }
-  
-  // Bio/about page penalty
-  const bioPatterns = ['/about', '/bio', '/leadership', '/team', '/company', '/executive', 'wikipedia.org'];
-  for (const pattern of bioPatterns) {
+  for (const { pattern, reason } of rejectPatterns) {
     if (lowerUrl.includes(pattern)) {
-      score -= 4;
-      reasons.push(`-4: bio pattern "${pattern}"`);
-      break;
+      return { passed: false, reasons: [`REJECT: ${reason}`] };
     }
   }
   
-  // Title penalties
-  const badTitlePatterns = ['executive profile', 'leadership', 'about', 'biography', 'board of directors'];
-  for (const pattern of badTitlePatterns) {
-    if (lowerTitle.includes(pattern)) {
-      score -= 3;
-      reasons.push(`-3: bad title pattern "${pattern}"`);
-      break;
-    }
-  }
-  
-  return { score, reasons };
-}
-
-function isNicheEnoughResult(url: string, title: string, snippet: string): boolean {
-  const scoreResult = scoreUrl(url, title);
-  
-  // Must have positive score to be considered niche
-  if (scoreResult.score < 0) return false;
-  
-  // Check snippet for opinion/viewpoint indicators
-  const opinionIndicators = [
-    'i think', 'i believe', 'we learned', 'lesson', 'mistake', 'challenge',
-    'surprised', 'realized', 'decision', 'why we', 'how we', 'built', 'shipped',
-    'launched', 'grew', 'scaled', 'pivoted', 'failed', 'succeeded'
+  // ELIGIBLE patterns (must match at least one)
+  const eligiblePatterns = [
+    { patterns: ['interview', 'podcast', 'transcript', 'fireside', 'conversation'], type: 'artifact' },
+    { patterns: ['talk', 'keynote', 'panel', 'conference', 'summit'], type: 'artifact' },
+    { patterns: ['essay', 'op-ed', 'wrote', 'writes', 'blog', 'newsletter', 'substack'], type: 'artifact' },
+    { patterns: ['joined', 'left', 'pivot', 'acquired', 'founded', 'launched'], type: 'inflection' },
+    { patterns: ['initiative', 'program', 'announced', 'leading', 'spearheading'], type: 'initiative' },
+    { patterns: ['i think', 'i believe', 'we learned', 'lesson', 'mistake', 'surprised', 'realized'], type: 'stance' },
   ];
   
-  const lowerSnippet = snippet.toLowerCase();
-  const hasOpinion = opinionIndicators.some(ind => lowerSnippet.includes(ind));
+  for (const { patterns, type } of eligiblePatterns) {
+    for (const p of patterns) {
+      if (lowerUrl.includes(p) || combined.includes(p)) {
+        reasons.push(`ELIGIBLE: ${type} (found "${p}")`);
+        return { passed: true, reasons };
+      }
+    }
+  }
   
-  if (hasOpinion) return true;
+  // Publication domain boost (can pass even without explicit pattern)
+  const pubDomains = ['medium.com', 'substack.com', 'forbes.com', 'techcrunch.com', 'wired.com', 'hbr.org', 'firstround.com', 'a16z.com', 'nfx.com', 'fastcompany.com', 'axios.com', 'youtube.com/watch'];
+  for (const domain of pubDomains) {
+    if (lowerUrl.includes(domain)) {
+      reasons.push(`ELIGIBLE: publication domain (${domain})`);
+      return { passed: true, reasons };
+    }
+  }
   
-  // If no opinion but score is high enough, still include
-  return scoreResult.score >= 3;
+  return { passed: false, reasons: ['REJECT: no eligible pattern found'] };
 }
 
-// ============= VALIDATOR HELPERS =============
+// ============= STAGE 5: IDENTITY LOCK ON CONTENT =============
+
+function checkIdentityLock(
+  text: string,
+  recipientName: string,
+  fingerprint: IdentityFingerprint
+): { locked: boolean; reasons: string[] } {
+  const lowerText = text.toLowerCase();
+  const reasons: string[] = [];
+  
+  // Check for recipient name (or canonical variant)
+  const nameParts = recipientName.toLowerCase().split(/\s+/);
+  const canonicalParts = fingerprint.canonical_name.toLowerCase().split(/\s+/);
+  const allNameVariants = [...new Set([...nameParts, ...canonicalParts])];
+  
+  const hasName = allNameVariants.some(part => part.length > 2 && lowerText.includes(part));
+  if (!hasName) {
+    return { locked: false, reasons: ['Identity lock failed: name not found in content'] };
+  }
+  reasons.push('Name found in content');
+  
+  // Check for company OR disambiguator
+  const hasCompany = lowerText.includes(fingerprint.company.toLowerCase());
+  const hasDisambiguator = fingerprint.disambiguators.some(d => 
+    d.length > 3 && lowerText.includes(d.toLowerCase())
+  );
+  
+  if (!hasCompany && !hasDisambiguator) {
+    return { locked: false, reasons: ['Identity lock failed: company/disambiguator not found'] };
+  }
+  
+  if (hasCompany) reasons.push('Company found in content');
+  if (hasDisambiguator) reasons.push('Disambiguator found in content');
+  
+  // Check for confounder keywords (negative signal)
+  for (const confounder of fingerprint.confounders) {
+    for (const negKeyword of confounder.negative_keywords) {
+      if (negKeyword.length > 3 && lowerText.includes(negKeyword.toLowerCase())) {
+        return { locked: false, reasons: [`Identity lock failed: confounder keyword "${negKeyword}" found (may be ${confounder.name})`] };
+      }
+    }
+  }
+  
+  return { locked: true, reasons };
+}
+
+// ============= STAGE 6: HOOK PACK EXTRACTION =============
+
+async function extractHookPacks(
+  recipientName: string,
+  recipientRole: string,
+  recipientCompany: string,
+  eligibleCandidates: CandidateUrl[],
+  hypotheses: BridgeHypothesis[],
+  credibilityStory: string,
+  LOVABLE_API_KEY: string
+): Promise<HookPack[]> {
+  console.log('=== Stage 6: Hook Pack Extraction ===');
+  
+  if (eligibleCandidates.length === 0) {
+    console.log('No eligible candidates for hook pack extraction');
+    return [];
+  }
+  
+  const sourcesContext = eligibleCandidates.slice(0, 6).map((c, i) => `
+SOURCE ${i + 1}: ${c.url}
+Title: ${c.title}
+Content: ${(c.text || '').substring(0, 2000)}
+`).join('\n---\n');
+
+  const hypothesesContext = hypotheses.map((h, i) => `
+${i + 1}. ${h.type.toUpperCase()} bridge: Looking for evidence that ${h.proof_target}
+   Keywords: ${h.keywords.join(', ')}
+`).join('');
+
+  const extractionPrompt = `Extract Hook Packs for a cold email to ${recipientName}, ${recipientRole} at ${recipientCompany}.
+
+SENDER'S CREDIBILITY STORY:
+"${credibilityStory}"
+
+BRIDGE HYPOTHESES (what we're looking for):
+${hypothesesContext}
+
+SOURCES TO ANALYZE:
+${sourcesContext}
+
+For each source, try to extract a Hook Pack. A Hook Pack contains:
+1. A non-obvious CLAIM about the recipient (not just job title or generic bio)
+2. A concrete "Like you," bridge line that connects sender to this claim
+3. Scores for quality
+
+HOOK PACK REQUIREMENTS:
+- The claim must be something you couldn't know from their LinkedIn alone
+- The "Like you," line must reference a shared tension/value/domain in concrete terms
+- The evidence must be a direct quote from the source (8-25 words)
+
+INVALID "Like you," lines (DO NOT generate these):
+- "Like you, I went to Stanford" (just identity mirroring)
+- "Like you, I'm passionate about X" (too generic)
+- "Like you, I work in tech" (too broad)
+
+VALID "Like you," lines:
+- "Like you, I've had to convince skeptical enterprise buyers that AI can be trustworthy"
+- "Like you, I spent years building pipelines before realizing the real bottleneck was mentorship"
+- "Like you, I've wrestled with the tension between moving fast and maintaining quality"
+
+Return JSON:
+{
+  "hook_packs": [
+    {
+      "hook_fact": {
+        "claim": "Non-obvious claim about recipient",
+        "source_url": "https://...",
+        "evidence": "8-25 word quote from source"
+      },
+      "bridge": {
+        "like_you_line": "Like you, I...",
+        "bridge_angle": "domain|value|tradeoff|artifact|inflection|shared-affiliation",
+        "why_relevant": "Brief explanation of why this bridge works"
+      },
+      "scores": {
+        "identity_conf": 0.0-1.0,
+        "non_generic": 0.0-1.0,
+        "bridgeability": 0.0-1.0,
+        "overall": 0.0-1.0
+      }
+    }
+  ]
+}
+
+SCORING RUBRIC:
+- identity_conf: Is this clearly about the right person? (0.0 = uncertain, 1.0 = definitely them)
+- non_generic: Would this be unknown from their title alone? (0.0 = obvious, 1.0 = surprising)
+- bridgeability: Can we write a specific "Like you," line? (0.0 = generic, 1.0 = concrete parallel)
+- overall: Weighted average = 0.45*identity_conf + 0.30*bridgeability + 0.25*non_generic
+
+Only include Hook Packs with overall score >= 0.5
+Return maximum 2 Hook Packs, prioritize quality over quantity.
+If no good Hook Packs can be extracted, return empty array.
+
+Return ONLY valid JSON.`;
+
+  try {
+    const response = await callLLM(
+      LOVABLE_API_KEY,
+      'You extract high-quality personalization hooks for cold emails. Be rigorous about what counts as "bridgeable".',
+      extractionPrompt,
+      RESEARCH_MODEL_NAME
+    );
+    
+    const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    
+    // Filter by overall score and limit to 2
+    const hookPacks: HookPack[] = (parsed.hook_packs || [])
+      .filter((hp: HookPack) => hp.scores?.overall >= 0.5)
+      .slice(0, 2);
+    
+    console.log(`Extracted ${hookPacks.length} Hook Packs`);
+    return hookPacks;
+  } catch (e) {
+    console.error('Failed to extract hook packs:', e);
+    return [];
+  }
+}
+
+// ============= HELPER FUNCTIONS =============
+
+async function callLLM(
+  LOVABLE_API_KEY: string,
+  systemPrompt: string,
+  userPrompt: string,
+  modelName: string = MODEL_NAME
+): Promise<string> {
+  const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Lovable AI error:', response.status, errorText);
+    throw { status: response.status, message: errorText };
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+async function exaSearchWithContent(query: string, exaApiKey: string, numResults: number = 8): Promise<ExaResult[]> {
+  console.log('Exa search query:', query);
+  
+  const response = await fetch('https://api.exa.ai/search', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${exaApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query,
+      numResults,
+      type: 'neural',
+      useAutoprompt: true,
+      contents: {
+        text: { maxCharacters: 3000 },
+        highlights: { numSentences: 5 },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Exa search error:', response.status, errorText);
+    return [];
+  }
+
+  const data = await response.json();
+  console.log('Exa search returned', data.results?.length || 0, 'results');
+  
+  return (data.results || []).map((r: any) => ({
+    url: r.url || '',
+    title: r.title || '',
+    snippet: r.highlights?.join(' ') || '',
+    text: r.text || '',
+  }));
+}
 
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(w => w.length > 0).length;
@@ -549,9 +758,7 @@ function countCliches(text: string): number {
   const lowerText = text.toLowerCase();
   let count = 0;
   for (const cliche of BANNED_CLICHES) {
-    if (lowerText.includes(cliche)) {
-      count++;
-    }
+    if (lowerText.includes(cliche)) count++;
   }
   return count;
 }
@@ -560,10 +767,7 @@ function hasBracketPlaceholders(text: string): boolean {
   return /\[[A-Za-z]+\]/.test(text);
 }
 
-function validateEmail(
-  rawText: string,
-  recipientFirstName: string
-): ValidationResult {
+function validateEmail(rawText: string, recipientFirstName: string): ValidationResult {
   const errors: string[] = [];
   
   let parsed: { subject?: string; body?: string };
@@ -692,8 +896,6 @@ Critical fixes needed:
 Return ONLY valid JSON with keys "subject" and "body".`;
 }
 
-// ============= HELPERS =============
-
 function getAskTypeLabel(askType: string): string {
   const labels: Record<string, string> = {
     'chat': 'a short introductory chat',
@@ -717,416 +919,179 @@ function getAffiliationTypeLabel(type: string): string {
   return labels[type] || type;
 }
 
-async function callLLM(
-  LOVABLE_API_KEY: string,
-  systemPrompt: string,
-  userPrompt: string,
-  modelName: string = MODEL_NAME
-): Promise<string> {
-  const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: modelName,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-    }),
-  });
+// ============= V2 RESEARCH PIPELINE =============
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Lovable AI error:', response.status, errorText);
-    throw { status: response.status, message: errorText };
-  }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
-}
-
-// ============= EXA SEARCH WITH CONTENT =============
-
-async function exaSearchWithContent(query: string, exaApiKey: string, numResults: number = 8): Promise<ExaResult[]> {
-  console.log('Exa search query:', query);
-  
-  const response = await fetch('https://api.exa.ai/search', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${exaApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      query,
-      numResults,
-      type: 'neural',
-      useAutoprompt: true,
-      contents: {
-        text: {
-          maxCharacters: 3000, // Get more content for extraction
-        },
-        highlights: {
-          numSentences: 5,
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Exa search error:', response.status, errorText);
-    return [];
-  }
-
-  const data = await response.json();
-  console.log('Exa search returned', data.results?.length || 0, 'results');
-  
-  return (data.results || []).map((r: any) => ({
-    url: r.url || '',
-    title: r.title || '',
-    snippet: r.highlights?.join(' ') || '',
-    text: r.text || '',
-  }));
-}
-
-// ============= RESEARCH PIPELINE (EXA ONLY WITH IDENTITY ANCHOR) =============
-
-interface IdentityAnchorResult {
-  confirmed: boolean;
-  identityUrls: string[];
-  identityScores: { url: string; title: string; score: number; reasons: string[]; isIdentityMatch: boolean }[];
+interface V2ResearchResult {
+  hookPacks: HookPack[];
+  identityFingerprint: IdentityFingerprint | null;
+  bridgeHypotheses: BridgeHypothesis[];
+  candidateUrls: CandidateUrl[];
+  queriesUsed: string[];
+  exaResults: ExaResult[];
+  selectedSources: string[];
   notes?: string;
 }
 
-async function performResearch(
+async function performV2Research(
   recipientName: string,
   recipientCompany: string,
   recipientRole: string,
   reachingOutBecause: string,
   credibilityStory: string,
-  askType: AskType,
-  exaApiKey: string
-): Promise<{
-  queryPlan: QueryPlan;
-  queriesUsed: string[];
-  exaResults: ExaResult[];
-  selectedResults: ExaResult[];
-  debug: ResearchDebug;
-  identityAnchor: IdentityAnchorResult;
-}> {
+  exaApiKey: string,
+  LOVABLE_API_KEY: string
+): Promise<V2ResearchResult> {
+  console.log('=== V2 Research Pipeline ===');
   
-  // ============= STEP 0: Identity Anchor (ALWAYS RUN FIRST) =============
-  console.log('=== STEP 0: Identity Anchor ===');
+  const queriesUsed: string[] = [];
+  let allExaResults: ExaResult[] = [];
   
-  const identityQueries = buildIdentityQueries(recipientName, recipientCompany, recipientRole);
-  console.log('Identity queries:', identityQueries);
+  // ============= STAGE 1A: High-precision identity search =============
+  console.log('=== Stage 1A: Identity Search ===');
   
-  const identityScores: { url: string; title: string; score: number; reasons: string[]; isIdentityMatch: boolean }[] = [];
+  const identityQueries = [
+    `"${recipientName}" "${recipientCompany}" bio`,
+    `"${recipientName}" "${recipientCompany}" "${recipientRole}"`,
+  ];
+  
   let identityResults: ExaResult[] = [];
-  const identityQueriesUsed: string[] = [];
-  
-  // Run identity queries (max 2)
-  for (const query of identityQueries.slice(0, 2)) {
-    identityQueriesUsed.push(query);
-    const results = await exaSearchWithContent(query, exaApiKey, 5); // Only top 5 for identity
-    
-    for (const r of results) {
-      if (!identityResults.find(existing => existing.url === r.url)) {
-        identityResults.push(r);
-        
-        // Score for identity match (not niche-ness)
-        const identityScore = scoreIdentityMatch(
-          r.url, 
-          r.title, 
-          r.text || r.snippet || '', 
-          recipientCompany, 
-          recipientRole
-        );
-        identityScores.push({
-          url: r.url,
-          title: r.title,
-          score: identityScore.score,
-          reasons: identityScore.reasons,
-          isIdentityMatch: identityScore.isIdentityMatch,
-        });
-      }
-    }
+  for (const q of identityQueries) {
+    queriesUsed.push(q);
+    const results = await exaSearchWithContent(q, exaApiKey, 5);
+    identityResults = [...identityResults, ...results];
+    allExaResults = [...allExaResults, ...results];
   }
   
-  // Sort by identity score
-  identityScores.sort((a, b) => b.score - a.score);
-  console.log('Identity scores:', identityScores.map(s => ({ 
-    url: s.url.substring(0, 50), 
-    score: s.score, 
-    match: s.isIdentityMatch 
-  })));
+  // Dedupe by URL
+  const seenUrls = new Set<string>();
+  identityResults = identityResults.filter(r => {
+    if (seenUrls.has(r.url)) return false;
+    seenUrls.add(r.url);
+    return true;
+  });
   
-  // Check if we have confident identity match (score >= 4)
-  const confirmedIdentityUrls = identityScores
-    .filter(s => s.isIdentityMatch)
-    .map(s => s.url);
+  console.log(`Identity search found ${identityResults.length} unique results`);
   
-  const identityAnchor: IdentityAnchorResult = {
-    confirmed: confirmedIdentityUrls.length > 0,
-    identityUrls: confirmedIdentityUrls.slice(0, 2),
-    identityScores,
-    notes: confirmedIdentityUrls.length === 0 
-      ? 'Could not confidently disambiguate recipient identity; name may be ambiguous.' 
-      : undefined,
-  };
-  
-  console.log('Identity anchor confirmed:', identityAnchor.confirmed);
-  
-  // If no identity match, return early with empty results
-  if (!identityAnchor.confirmed) {
-    console.log('STOPPING: No confident identity match found');
-    
-    const emptyQueryPlan: QueryPlan = {
-      queries: [],
-      intent_keywords: [],
-      intent_angle: 'identity disambiguation failed',
-    };
-    
-    const debug: ResearchDebug = {
-      queryPlan: emptyQueryPlan,
-      queriesUsed: identityQueriesUsed,
-      urlScores: [],
-      urlsFetched: [],
-      notes: 'Research stopped: could not confirm recipient identity. Name may be ambiguous.',
-    };
-    
-    return {
-      queryPlan: emptyQueryPlan,
-      queriesUsed: identityQueriesUsed,
-      exaResults: identityResults,
-      selectedResults: [],
-      debug,
-      identityAnchor,
-    };
-  }
-  
-  // ============= STEP 1: Build Niche Query Plan =============
-  console.log('=== STEP 1: Build Niche Query Plan ===');
-  
-  const queryPlan = buildExaQueryPlan({
+  // ============= STAGE 1B: Extract identity fingerprint =============
+  const { fingerprint, confidence } = await extractIdentityFingerprint(
     recipientName,
     recipientCompany,
     recipientRole,
+    identityResults,
+    LOVABLE_API_KEY
+  );
+  
+  console.log('Identity fingerprint:', fingerprint);
+  console.log('Identity confidence:', confidence);
+  
+  // Exit if identity confidence too low
+  if (confidence < 0.4) {
+    console.log('STOPPING: Identity confidence too low');
+    return {
+      hookPacks: [],
+      identityFingerprint: fingerprint,
+      bridgeHypotheses: [],
+      candidateUrls: [],
+      queriesUsed,
+      exaResults: allExaResults,
+      selectedSources: [],
+      notes: 'Research stopped: could not confidently identify recipient. Name may be ambiguous.',
+    };
+  }
+  
+  // ============= STAGE 2: Generate bridge hypotheses =============
+  const hypotheses = await generateBridgeHypotheses(
     reachingOutBecause,
     credibilityStory,
-    askType,
-  });
+    recipientRole,
+    recipientCompany,
+    LOVABLE_API_KEY
+  );
   
-  console.log('Niche query plan:', queryPlan);
+  console.log('Bridge hypotheses:', hypotheses.map(h => ({ type: h.type, keywords: h.keywords.slice(0, 3) })));
   
-  const queriesUsed: string[] = [...identityQueriesUsed];
-  let allResults: ExaResult[] = [...identityResults];
-  const urlScores: { url: string; title: string; score: number; reasons: string[] }[] = [];
+  // ============= STAGE 3: Candidate discovery =============
+  const { candidates, queriesUsed: discoveryQueries } = await discoverCandidates(
+    recipientName,
+    fingerprint,
+    hypotheses,
+    exaApiKey
+  );
   
-  // ============= STEP 2: Exa Niche Search with Early Stopping =============
-  console.log('=== STEP 2: Niche Exa Search ===');
+  queriesUsed.push(...discoveryQueries);
+  allExaResults = [...allExaResults, ...candidates];
   
-  const MAX_QUERIES = 3;
-  const MIN_NICHE_RESULTS = 2;
+  // ============= STAGE 4 & 5: Niche gate + Identity lock =============
+  console.log('=== Stage 4 & 5: Niche Gate + Identity Lock ===');
   
-  for (let i = 0; i < Math.min(queryPlan.queries.length, MAX_QUERIES); i++) {
-    const query = queryPlan.queries[i];
-    queriesUsed.push(query);
+  const candidateUrls: CandidateUrl[] = [];
+  const eligibleCandidates: CandidateUrl[] = [];
+  
+  for (const c of candidates) {
+    // Stage 4: Niche gate
+    const nicheResult = applyNicheGate(c.url, c.title, c.snippet);
     
-    const results = await exaSearchWithContent(query, exaApiKey);
-    
-    // Dedupe by URL and FILTER by identity match
-    for (const r of results) {
-      if (!allResults.find(existing => existing.url === r.url)) {
-        allResults.push(r);
-        
-        // First check identity match (must pass)
-        const identityScore = scoreIdentityMatch(
-          r.url, 
-          r.title, 
-          r.text || r.snippet || '', 
-          recipientCompany, 
-          recipientRole
-        );
-        
-        // If wrong person, skip entirely
-        if (identityScore.score < 0) {
-          console.log(`Skipping ${r.url.substring(0, 50)} - identity score ${identityScore.score} (wrong person)`);
-          continue;
-        }
-        
-        // Then score for niche-ness
-        const nicheScore = scoreUrl(r.url, r.title);
-        
-        // Combined score: identity match is prerequisite, then niche score
-        const combinedScore = identityScore.isIdentityMatch 
-          ? nicheScore.score + 2 // Bonus for confirmed identity
-          : nicheScore.score - 2; // Penalty if not confirmed
-        
-        urlScores.push({
-          url: r.url,
-          title: r.title,
-          score: combinedScore,
-          reasons: [...identityScore.reasons, ...nicheScore.reasons],
-        });
-      }
+    if (!nicheResult.passed) {
+      candidateUrls.push({
+        url: c.url,
+        title: c.title,
+        text: c.text || '',
+        passed_niche_gate: false,
+        reasons: nicheResult.reasons,
+        identity_locked: false,
+      });
+      continue;
     }
     
-    // Check if we have enough niche results with identity match
-    const nicheWithIdentity = urlScores.filter(s => s.score >= 3);
-    console.log(`After query ${i + 1}: ${allResults.length} total, ${nicheWithIdentity.length} niche+identity`);
+    // Stage 5: Identity lock
+    const identityResult = checkIdentityLock(c.text || c.snippet || '', recipientName, fingerprint);
     
-    if (nicheWithIdentity.length >= MIN_NICHE_RESULTS) {
-      console.log('Early stopping: enough niche+identity results found');
-      break;
+    const candidate: CandidateUrl = {
+      url: c.url,
+      title: c.title,
+      text: c.text || '',
+      passed_niche_gate: true,
+      reasons: [...nicheResult.reasons, ...identityResult.reasons],
+      identity_locked: identityResult.locked,
+    };
+    
+    candidateUrls.push(candidate);
+    
+    if (identityResult.locked) {
+      eligibleCandidates.push(candidate);
     }
   }
   
-  // ============= STEP 3: Score and Select Top Results =============
-  console.log('=== STEP 3: Score and Select ===');
+  console.log(`${eligibleCandidates.length} candidates passed niche gate + identity lock`);
   
-  // Sort by combined score
-  urlScores.sort((a, b) => b.score - a.score);
-  console.log('URL scores (identity+niche):', urlScores.map(s => ({ url: s.url.substring(0, 60), score: s.score })));
-  
-  // Select top 2-4 results that pass both identity and niche checks
-  const selectedResults: ExaResult[] = [];
-  const urlsFetched: string[] = [];
-  
-  for (const scored of urlScores) {
-    if (selectedResults.length >= 4) break;
-    
-    // Only include if combined score is positive (identity confirmed + some niche value)
-    if (scored.score >= 1) {
-      const result = allResults.find(r => r.url === scored.url);
-      if (result && !selectedResults.includes(result)) {
-        selectedResults.push(result);
-        urlsFetched.push(result.url);
-      }
-    }
+  // Early stop if we have enough
+  if (eligibleCandidates.length >= 2) {
+    console.log('Early stop: enough eligible candidates');
   }
   
-  console.log(`Selected ${selectedResults.length} results for extraction:`, urlsFetched);
-  
-  const debug: ResearchDebug = {
-    queryPlan,
-    queriesUsed,
-    urlScores,
-    urlsFetched,
-  };
+  // ============= STAGE 6: Hook Pack extraction =============
+  const hookPacks = await extractHookPacks(
+    recipientName,
+    recipientRole,
+    recipientCompany,
+    eligibleCandidates.slice(0, 6), // Cap at 6 for content fetch
+    hypotheses,
+    credibilityStory,
+    LOVABLE_API_KEY
+  );
   
   return {
-    queryPlan,
+    hookPacks,
+    identityFingerprint: fingerprint,
+    bridgeHypotheses: hypotheses,
+    candidateUrls,
     queriesUsed,
-    exaResults: allResults.slice(0, 8),
-    selectedResults,
-    debug,
-    identityAnchor,
+    exaResults: allExaResults.slice(0, 10),
+    selectedSources: eligibleCandidates.map(c => c.url),
   };
 }
 
-// ============= HOOK FACT EXTRACTION =============
-
-async function extractHookFacts(
-  recipientName: string,
-  recipientRole: string,
-  recipientCompany: string,
-  selectedResults: ExaResult[],
-  reachingOutBecause: string,
-  intentKeywords: string[],
-  LOVABLE_API_KEY: string
-): Promise<{ facts: HookFact[]; rejectionReasons: string[] }> {
-  console.log('=== STEP 4: Hook Fact Extraction ===');
-  
-  if (selectedResults.length === 0) {
-    console.log('No content to extract facts from');
-    return { facts: [], rejectionReasons: ['No search results to extract from'] };
-  }
-  
-  // Build context from Exa content
-  const sourcesContext = selectedResults.map((result, i) => `
-SOURCE ${i + 1}: ${result.url}
-Title: ${result.title}
-Content:
-${result.text || result.snippet || '(no content)'}
-`).join('\n---\n');
-
-  const keywordsContext = intentKeywords.length > 0 
-    ? `\nSender's intent keywords: ${intentKeywords.join(', ')}`
-    : '';
-
-  const extractionPrompt = `You are analyzing public content about ${recipientName}, ${recipientRole} at ${recipientCompany}.
-
-The sender wants to reach out because: "${reachingOutBecause}"${keywordsContext}
-
-Here are the sources found:
-${sourcesContext}
-
-Extract 0-3 "hook facts" that could be used to personalize a cold email. 
-
-A NICHE-ENOUGH hook fact is:
-✓ A specific opinion/idea they expressed (with context)
-✓ A specific initiative with a "why" angle
-✓ A notable takeaway from a talk/podcast/interview
-✓ A concrete non-obvious detail that bridges to sender story
-
-NOT niche-enough (REJECT these):
-✗ "X is EVP at Y" (just job title)
-✗ "X joined Y in 2023" (just timeline)
-✗ "X previously worked at Z" (just history)
-✗ "X co-founded A" without an angle
-✗ "X is known for..." (generic)
-✗ Generic awards or "featured in" lists
-
-STRICT REQUIREMENTS for each fact:
-- claim: A specific, interesting observation (not generic)
-- source_url: The exact URL from the sources above
-- evidence_quote: 8-25 words pulled DIRECTLY from the source content
-- why_relevant: Why this matters for the outreach (connect to sender intent)
-- bridge_type: "intent" (connects to sender's goal), "credibility" (parallel experience), or "curiosity" (interesting conversation starter)
-- hook_score: 1-5 (5 = highly specific and relevant, 1 = borderline useful)
-
-IMPORTANT:
-- Only include facts with hook_score >= 3
-- If you cannot find niche-enough facts, return EMPTY array []
-- Maximum 3 facts, prefer quality over quantity
-
-Return ONLY valid JSON in this format:
-{
-  "facts": [...],
-  "rejection_reasons": ["reason why a potential fact was rejected", ...]
-}`;
-
-  try {
-    const response = await callLLM(
-      LOVABLE_API_KEY,
-      'You are a research analyst extracting specific, verifiable facts. Be rigorous about what counts as "niche-enough". Reject generic bio information.',
-      extractionPrompt,
-      RESEARCH_MODEL_NAME
-    );
-    
-    const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    
-    // Filter to only include facts with score >= 3
-    const facts: HookFact[] = (parsed.facts || [])
-      .filter((f: HookFact) => f.hook_score >= 3)
-      .slice(0, 3);
-    
-    const rejectionReasons: string[] = parsed.rejection_reasons || [];
-    
-    console.log('Extracted hook facts:', facts.length);
-    console.log('Rejection reasons:', rejectionReasons);
-    
-    return { facts, rejectionReasons };
-  } catch (e) {
-    console.error('Failed to extract hook facts:', e);
-    return { facts: [], rejectionReasons: ['Extraction failed: ' + String(e)] };
-  }
-}
+// ============= MAIN HANDLER =============
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -1210,74 +1175,33 @@ serve(async (req) => {
       );
     }
 
-    // ============= RESEARCH PIPELINE =============
-    let exaQueries: string[] = [];
-    let exaResults: ExaResult[] = [];
-    let selectedSources: string[] = [];
-    let hookFacts: HookFact[] = [];
-    let researchDebug: ResearchDebug | null = null;
-    let intentKeywords: string[] = [];
-    let identityAnchorResult: IdentityAnchorResult | null = null;
+    // ============= V2 RESEARCH PIPELINE =============
+    let researchResult: V2ResearchResult | null = null;
     
     if (EXA_API_KEY) {
-      console.log('Starting research pipeline (Exa only with identity anchor)...');
+      console.log('Starting V2 research pipeline...');
       
       try {
-        const researchData = await performResearch(
+        researchResult = await performV2Research(
           recipientName,
           recipientCompany,
           recipientRole,
           reachingOutBecause,
           credibilityStory,
-          askType,
-          EXA_API_KEY
+          EXA_API_KEY,
+          LOVABLE_API_KEY
         );
         
-        exaQueries = researchData.queriesUsed;
-        exaResults = researchData.exaResults;
-        selectedSources = researchData.selectedResults.map(r => r.url);
-        intentKeywords = researchData.queryPlan.intent_keywords;
-        researchDebug = researchData.debug;
-        identityAnchorResult = researchData.identityAnchor;
-        
-        console.log(`Research complete: identity confirmed=${identityAnchorResult.confirmed}, ${exaResults.length} Exa results, ${researchData.selectedResults.length} selected`);
-        
-        // Only extract hook facts if identity was confirmed
-        if (identityAnchorResult.confirmed && researchData.selectedResults.length > 0) {
-          const extraction = await extractHookFacts(
-            recipientName,
-            recipientRole,
-            recipientCompany,
-            researchData.selectedResults,
-            reachingOutBecause,
-            intentKeywords,
-            LOVABLE_API_KEY
-          );
-          
-          hookFacts = extraction.facts;
-          if (researchDebug) {
-            researchDebug.factRejectionReasons = extraction.rejectionReasons;
-          }
-          
-          console.log(`Extracted ${hookFacts.length} niche hook facts`);
-        } else if (!identityAnchorResult.confirmed) {
-          console.log('Skipping hook fact extraction: identity not confirmed');
-          if (researchDebug) {
-            researchDebug.notes = 'Hook fact extraction skipped: could not confirm recipient identity.';
-          }
-        }
+        console.log(`V2 Research complete: ${researchResult.hookPacks.length} Hook Packs extracted`);
       } catch (e) {
-        console.error('Research pipeline failed:', e);
-        if (researchDebug) {
-          researchDebug.notes = 'Research pipeline failed: ' + String(e);
-        }
+        console.error('V2 Research pipeline failed:', e);
       }
     } else {
       console.log('EXA_API_KEY not configured, skipping research');
     }
 
     // ============= GENERATE EMAIL =============
-    console.log('=== STEP 5: Generate Email ===');
+    console.log('=== Generate Email ===');
     
     // Build shared affiliation section if provided
     let sharedAffiliationSection = '';
@@ -1295,23 +1219,27 @@ SHARED AFFILIATION (user-declared, use ONLY as last resort for "Like you," conne
 IMPORTANT: Only use this shared affiliation if no stronger craft/problem/constraint parallel exists.`;
     }
 
-    // Build hook facts section
-    let hookFactsSection = '';
-    if (hookFacts.length > 0) {
-      hookFactsSection = `
-RESEARCHED HOOK FACTS (use 1-2 to create the "Like you," bridge):
-${hookFacts.map((f, i) => `
-${i + 1}. Claim: ${f.claim}
-   Source: ${f.source_url}
-   Evidence: "${f.evidence_quote}"
-   Relevance: ${f.why_relevant}
-   Bridge type: ${f.bridge_type}
+    // Build Hook Packs section (V2)
+    let hookPacksSection = '';
+    if (researchResult && researchResult.hookPacks.length > 0) {
+      hookPacksSection = `
+RESEARCHED HOOK PACKS (use one to create the "Like you," bridge):
+${researchResult.hookPacks.map((hp, i) => `
+${i + 1}. CLAIM: ${hp.hook_fact.claim}
+   Source: ${hp.hook_fact.source_url}
+   Evidence: "${hp.hook_fact.evidence}"
+   
+   SUGGESTED "Like you," LINE: "${hp.bridge.like_you_line}"
+   Bridge angle: ${hp.bridge.bridge_angle}
+   Why relevant: ${hp.bridge.why_relevant}
+   
+   Quality scores: identity=${hp.scores.identity_conf.toFixed(2)}, non_generic=${hp.scores.non_generic.toFixed(2)}, bridgeability=${hp.scores.bridgeability.toFixed(2)}, overall=${hp.scores.overall.toFixed(2)}
 `).join('')}
 
-Use these facts to create a genuine connection, not as praise or résumé summary.`;
+Use the suggested "Like you," line as inspiration or adapt it. Do not copy it verbatim if it doesn't flow naturally.`;
     } else {
-      hookFactsSection = `
-NO RESEARCHED FACTS AVAILABLE.
+      hookPacksSection = `
+NO RESEARCHED HOOK PACKS AVAILABLE.
 Create the "Like you," bridge using ONLY:
 - The sender's credibility story
 - The recipient's role and company context
@@ -1323,7 +1251,7 @@ Do NOT imply you did specific research on the recipient.`;
 RECIPIENT:
 - Name: ${recipientName}
 - Role: ${recipientRole} at ${recipientCompany}
-${hookFactsSection}
+${hookPacksSection}
 ${sharedAffiliationSection}
 
 SENDER'S CONTEXT:
@@ -1428,12 +1356,10 @@ Only return the JSON, no other text.`;
 
     // Log analytics
     console.log('=== GENERATION ANALYTICS ===');
-    console.log(`exa_queries: ${exaQueries.length}`);
-    console.log(`exa_results: ${exaResults.length}`);
-    console.log(`selected_sources: ${selectedSources.length}`);
-    console.log(`hook_facts: ${hookFacts.length}`);
+    console.log(`hook_packs: ${researchResult?.hookPacks.length || 0}`);
+    console.log(`exa_queries: ${researchResult?.queriesUsed.length || 0}`);
+    console.log(`selected_sources: ${researchResult?.selectedSources.length || 0}`);
     console.log(`did_retry: ${enforcementResults.did_retry}`);
-    console.log(`failures_first_pass: ${JSON.stringify(enforcementResults.failures_first_pass)}`);
     console.log(`like_you_count: ${likeYouCount}`);
     console.log(`word_count: ${wordCount}`);
     console.log(`validator_passed: ${validation.valid}`);
@@ -1462,68 +1388,63 @@ Only return the JSON, no other text.`;
             body: emailData.body,
             word_count: wordCount,
             cliche_count: clicheCount,
-            has_em_dash: hasEmDash(emailData.body),
-            latency_ms: latencyMs,
-            validator_passed: validation.valid,
-            validator_errors: validation.valid ? null : validation.errors,
             like_you_count: likeYouCount,
-            exa_queries: exaQueries,
-            exa_results: exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })),
-            selected_sources: selectedSources,
-            researched_facts: hookFacts,
+            has_em_dash: hasEmDash(emailData.body),
+            validator_passed: validation.valid,
+            validator_errors: validation.errors.length > 0 ? validation.errors : null,
             enforcement_results: enforcementResults,
+            exa_queries: researchResult?.queriesUsed || [],
+            exa_results: researchResult?.exaResults.map(r => ({ url: r.url, title: r.title })) || [],
+            selected_sources: researchResult?.selectedSources || [],
+            researched_facts: researchResult?.hookPacks.map(hp => hp.hook_fact.claim) || [],
+            latency_ms: latencyMs,
           });
-
+        
         if (insertError) {
           console.error('Failed to log generation:', insertError);
-        } else {
-          console.log('Generation logged successfully');
         }
       }
     } catch (logError) {
-      console.error('Error logging generation:', logError);
+      console.error('Logging error:', logError);
     }
 
     // Build response
-    const responseData: any = {
+    const responsePayload: any = {
       subject: emailData.subject,
       body: emailData.body,
-      // Research data
-      exaQueries,
-      exaResults: exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })),
-      selectedSources,
-      hookFacts,
-      // Legacy compatibility
-      researchedFacts: hookFacts.map(f => f.claim),
-      // Enforcement
+      hookPacks: researchResult?.hookPacks || [],
+      exaQueries: researchResult?.queriesUsed || [],
+      exaResults: researchResult?.exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })) || [],
+      selectedSources: researchResult?.selectedSources || [],
       enforcementResults,
-      // Validation
       validatorPassed: validation.valid,
-      validatorErrors: validation.valid ? null : validation.errors,
-      // Metrics
+      validatorErrors: validation.errors.length > 0 ? validation.errors : null,
       likeYouCount,
       wordCount,
       clicheCount,
       retryUsed: enforcementResults.did_retry,
     };
 
-    // Include debug data for test harness
-    if (includeDebug) {
-      responseData.debug = {
-        ...researchDebug,
-        identityAnchor: identityAnchorResult,
+    // Include debug info for test harness
+    if (includeDebug && researchResult) {
+      responsePayload.debug = {
+        identityFingerprint: researchResult.identityFingerprint,
+        bridgeHypotheses: researchResult.bridgeHypotheses,
+        candidateUrls: researchResult.candidateUrls,
+        queriesUsed: researchResult.queriesUsed,
+        notes: researchResult.notes,
       };
     }
 
     return new Response(
-      JSON.stringify(responseData),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify(responsePayload),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
-  } catch (error: unknown) {
-    console.error('Error in generate-email function:', error);
+  } catch (error) {
+    console.error('Unhandled error:', error);
     return new Response(
-      JSON.stringify({ error: 'Failed to generate email. Please try again.' }),
+      JSON.stringify({ error: 'An unexpected error occurred. Please try again.' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
