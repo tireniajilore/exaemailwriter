@@ -248,6 +248,39 @@ const CORPORATE_PADDING_PHRASES = [
   "take this offline",
 ];
 
+// Robotic/generic voice detection patterns
+const ROBOTIC_VOICE_PATTERNS = [
+  "i came across",
+  "i stumbled upon",
+  "i noticed that you",
+  "i was particularly struck",
+  "i was impressed",
+  "i was drawn to",
+  "i wanted to reach out",
+  "i hope this email finds you",
+  "i would love to",
+  "i'd love to connect",
+  "i believe we could",
+  "i think there's an opportunity",
+  "excited to explore",
+  "keen to discuss",
+  "eager to learn",
+  "looking forward to the opportunity",
+  "would be thrilled",
+  "would be honored",
+  "greatly appreciate",
+  "truly appreciate",
+  "deeply appreciate",
+  "resonate deeply",
+  "resonated with me",
+  "speaks to my",
+  "aligns perfectly",
+  "perfectly aligned",
+  "really stood out",
+  "caught my attention",
+  "piqued my interest",
+];
+
 // ============= QUERY TEMPLATE LIBRARY (STABLE) =============
 
 const TEMPLATE_LIBRARY = {
@@ -1454,6 +1487,17 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
       errors.push(`Contains corporate padding phrase: "${phrase}"`);
     }
   }
+
+  // Check for robotic/generic voice patterns
+  const roboticMatches: string[] = [];
+  for (const pattern of ROBOTIC_VOICE_PATTERNS) {
+    if (combinedText.toLowerCase().includes(pattern)) {
+      roboticMatches.push(pattern);
+    }
+  }
+  if (roboticMatches.length > 0) {
+    errors.push(`Sounds robotic/generic. Remove: "${roboticMatches[0]}". Write like you'd text a friend.`);
+  }
   
   // Check for overly long sentences (sign of padding)
   const sentences = body.split(/[.!?]+/).filter(s => s.trim().length > 0);
@@ -1486,11 +1530,21 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
 
 function buildRetryInstruction(errors: string[]): string {
   const errorList = errors.map(e => `- ${e}`).join('\n');
+  const hasRoboticError = errors.some(e => e.includes('robotic') || e.includes('generic'));
+  
+  const roboticGuidance = hasRoboticError ? `
+ROBOTIC VOICE FIX:
+You used a phrase that sounds like AI-generated filler. Replace it with:
+- A direct statement ("I build X" not "I'm passionate about X")
+- A specific detail ("Your talk at Y" not "I came across your work")
+- Casual phrasing ("Wanted to ask" not "I wanted to reach out")
+` : '';
+
   return `
 
 REWRITE REQUIRED — your previous output had issues:
 ${errorList}
-
+${roboticGuidance}
 VOICE REMINDER (most important):
 - Write like you're texting a smart friend, not drafting a memo
 - The "Like you," line should be the most NATURAL sentence, not the most formal
