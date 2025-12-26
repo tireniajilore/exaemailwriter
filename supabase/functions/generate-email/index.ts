@@ -6,38 +6,43 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PROMPT_VERSION = 'v3.1-validator';
+const PROMPT_VERSION = 'v4.0-exa-likeyou';
 const MODEL_NAME = 'google/gemini-2.5-flash';
+const RESEARCH_MODEL_NAME = 'google/gemini-2.5-flash';
 
+// ============= SUPER PROMPT (Updated for V2) =============
 const SUPER_PROMPT = `You are an expert writing coach who crafts short, vivid, highly personalized cold emails.
 Your job is to use the sender's inputs AND any researched information about the recipient to write a warm, confident, memorable email that a busy person will actually read and respond to.
 
 The email must be readable in under 20 seconds (roughly 120–150 words).
 
 NON-NEGOTIABLE REQUIREMENTS:
-- The email body MUST contain the exact lowercase phrase "like you" exactly once.
-- Do NOT use "As a fellow…" style openers; prefer "Like you, …".
+- The email body MUST contain the exact phrase "Like you," (capital L, comma) exactly once.
+- Do NOT use "As a fellow…" style openers.
 - Do not use any banned cliché phrases.
 - End with exactly "Best," and nothing after.
+- No bracket placeholders like [Name] or [Company].
+- No em-dashes (—).
 
-CONNECTION HIERARCHY (choose the strongest available "like you" bridge):
-1) Shared domain, tension, or challenge (preferred)
-2) Parallel anchored to a researched fact (moment, decision, artifact, opinion)
-3) Parallel anchored to the recipient's role or company context
-4) Shared affiliation (school, company, program) only as a last resort
+CONNECTION HIERARCHY for "Like you," bridge (in priority order):
+1) Shared craft or lived experience (built/shipped/led/wrote/scaled something similar)
+2) Shared problem space (payments, hiring, healthcare ops, enterprise sales, etc.)
+3) Shared constraint (regulated environment, emerging markets, resource constraints)
+4) Shared institution (school, company, program) — use ONLY as last resort
 
-HOW TO WRITE THE "LIKE YOU" LINE:
-- Use "like you" to express a specific parallel (challenge, transition, tradeoff, or craft)
+HOW TO WRITE THE "Like you," LINE:
+- Must start with "Like you," (capital L, comma after)
+- The phrase connects sender's story to a hook fact OR recipient's role/company if no facts available
 - Keep it concrete and non-obvious
-- The sentence containing "like you" must NOT include generic phrases like "passionate about", "think a lot about", "reaching out", "aligned with", "resonates", "inspired", "keen to", or "deeply appreciate"
-- Do NOT use alternate phrasing such as "As a fellow…" or "As someone who also…"
-- The sentence containing "like you" should appear early in the email (first or second paragraph)
+- The sentence containing "Like you," must NOT include generic phrases like "passionate about", "think a lot about", "reaching out", "aligned with", "resonates", "inspired", "keen to", or "deeply appreciate"
+- The "Like you," sentence should appear in the first or second paragraph
 
 RESEARCH USAGE RULES:
 - If researched facts are provided, use at most 1–2 facts
 - Use facts as anchors for a parallel or question, not as praise or résumé summary
 - Do NOT summarize the recipient's career or list accomplishments
-- If no researched facts exist, still create a "like you" bridge using role/company context and the sender's story
+- If facts are empty or no real research was found, do NOT imply you did research
+- If no researched facts exist, still create a "Like you," bridge using role/company context and the sender's story
 
 BANNED CLICHÉ PHRASES (never use these):
 - "i'm reaching out because" or "reaching out because"
@@ -63,7 +68,7 @@ STYLE RULES:
 STRUCTURE:
 - Subject line: short, specific, intriguing
 - Greeting with recipient's first name (e.g., "Hi John," or "John,")
-- 1–2 short paragraphs establishing the hook (include the "like you" line early)
+- 1–2 short paragraphs establishing the hook (include the "Like you," line early)
 - One small, specific ask
 - Sign-off: "Best," with nothing after
 
@@ -71,7 +76,7 @@ DO NOT EVER:
 - Invent private or sensitive information
 - Imply research you did not do
 - Stack multiple personalization angles
-- Use "like you" more than once
+- Use "Like you," more than once
 - Include a name after the sign-off`;
 
 // ============= VALIDATOR =============
@@ -109,23 +114,50 @@ interface ValidationResult {
   clicheCount: number;
 }
 
+interface HookFact {
+  claim: string;
+  source_url: string;
+  evidence_quote: string;
+  why_relevant: string;
+  bridge_type: 'intent' | 'credibility' | 'curiosity';
+  hook_score: number;
+}
+
+interface ExaResult {
+  url: string;
+  title: string;
+  snippet: string;
+  text?: string;
+}
+
+interface EnforcementResults {
+  did_retry: boolean;
+  failures_first_pass: string[];
+  failures_retry: string[];
+}
+
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(w => w.length > 0).length;
 }
 
 function hasEmDash(text: string): boolean {
-  return text.includes('—') || text.includes('--');
+  return text.includes('—');
 }
 
-function countLikeYou(text: string): number {
+// Count "Like you," specifically (capital L, comma)
+function countLikeYouCapitalized(text: string): number {
+  const matches = text.match(/Like you,/g);
+  return matches ? matches.length : 0;
+}
+
+// Count any case of "like you" for validation
+function countLikeYouAny(text: string): number {
   const lowerText = text.toLowerCase();
   const matches = lowerText.match(/like you/g);
   return matches ? matches.length : 0;
 }
 
 function extractSentenceWithLikeYou(body: string): string | null {
-  const lowerBody = body.toLowerCase();
-  // Split on sentence-ending punctuation
   const sentences = body.split(/(?<=[.!?])\s+/);
   for (const sentence of sentences) {
     if (sentence.toLowerCase().includes('like you')) {
@@ -144,6 +176,10 @@ function countCliches(text: string): number {
     }
   }
   return count;
+}
+
+function hasBracketPlaceholders(text: string): boolean {
+  return /\[[A-Za-z]+\]/.test(text);
 }
 
 function validateEmail(
@@ -176,27 +212,30 @@ function validateEmail(
   const subject = parsed.subject!;
   const body = parsed.body!;
   const combinedText = `${subject} ${body}`;
-  const lowerBody = body.toLowerCase();
-  const lowerSubject = subject.toLowerCase();
-  const lowerCombined = combinedText.toLowerCase();
 
-  // B. "like you" constraint
-  const likeYouCount = countLikeYou(body);
-  if (likeYouCount === 0) {
-    errors.push('Body must contain the exact phrase "like you"');
-  } else if (likeYouCount > 1) {
-    errors.push(`Body contains "like you" ${likeYouCount} times (must be exactly once)`);
+  // B. "Like you," constraint - must be exactly once with capital L and comma
+  const likeYouCapCount = countLikeYouCapitalized(body);
+  const likeYouAnyCount = countLikeYouAny(body);
+  
+  if (likeYouCapCount === 0) {
+    if (likeYouAnyCount > 0) {
+      errors.push('Body contains "like you" but not in correct format. Must be "Like you," (capital L, comma)');
+    } else {
+      errors.push('Body must contain the exact phrase "Like you," (capital L, comma)');
+    }
+  } else if (likeYouCapCount > 1) {
+    errors.push(`Body contains "Like you," ${likeYouCapCount} times (must be exactly once)`);
   }
 
-  // C. "like you" sentence cannot be generic
-  if (likeYouCount >= 1) {
+  // C. "Like you," sentence cannot be generic
+  if (likeYouAnyCount >= 1) {
     const likeYouSentence = extractSentenceWithLikeYou(body);
     if (likeYouSentence) {
       const lowerSentence = likeYouSentence.toLowerCase();
       for (const pattern of GENERIC_LIKE_YOU_PATTERNS) {
         if (lowerSentence.includes(pattern)) {
-          errors.push(`The "like you" sentence contains generic phrase "${pattern}"`);
-          break; // Only report one generic pattern per sentence
+          errors.push(`The "Like you," sentence contains generic phrase "${pattern}"`);
+          break;
         }
       }
     }
@@ -205,13 +244,18 @@ function validateEmail(
   // D. Ban specific cliché phrases
   let clicheCount = 0;
   for (const cliche of BANNED_CLICHES) {
-    if (lowerCombined.includes(cliche)) {
+    if (combinedText.toLowerCase().includes(cliche)) {
       errors.push(`Contains banned cliché: "${cliche}"`);
       clicheCount++;
     }
   }
 
-  // E. Formatting - greeting
+  // E. Bracket placeholders
+  if (hasBracketPlaceholders(combinedText)) {
+    errors.push('Contains bracket placeholders like [Name]');
+  }
+
+  // F. Formatting - greeting
   const bodyLines = body.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   if (bodyLines.length > 0) {
     const firstLine = bodyLines[0];
@@ -222,39 +266,38 @@ function validateEmail(
     }
   }
 
-  // E. Formatting - sign-off
+  // G. Formatting - sign-off (must end with "Best," and nothing after)
   const trimmedBody = body.trimEnd();
   if (!trimmedBody.endsWith('Best,')) {
     errors.push('Body must end with exactly "Best," and nothing after');
   }
 
-  // F. Punctuation bans
-  if (body.includes('—')) {
+  // H. Em-dash ban
+  if (hasEmDash(body)) {
     errors.push('Body contains em-dash (—) which is banned');
   }
-  if (subject.includes('—')) {
+  if (hasEmDash(subject)) {
     errors.push('Subject contains em-dash (—) which is banned');
   }
+
+  // I. Ellipsis ban
   if (body.includes('...') || body.includes('…')) {
     errors.push('Body contains ellipsis (... or …) which is banned');
   }
-  if (subject.includes('...') || subject.includes('…')) {
-    errors.push('Subject contains ellipsis (... or …) which is banned');
-  }
 
-  // G. Length
+  // J. Word count (90-170 range per spec)
   const wordCount = countWords(body);
-  if (wordCount < 110) {
-    errors.push(`Body has ${wordCount} words (minimum 110 required)`);
+  if (wordCount < 90) {
+    errors.push(`Body has ${wordCount} words (minimum 90 required)`);
   }
-  if (wordCount > 160) {
-    errors.push(`Body has ${wordCount} words (maximum 160 allowed)`);
+  if (wordCount > 170) {
+    errors.push(`Body has ${wordCount} words (maximum 170 allowed)`);
   }
 
   return {
     valid: errors.length === 0,
     errors,
-    likeYouCount,
+    likeYouCount: likeYouCapCount,
     wordCount,
     clicheCount,
   };
@@ -269,50 +312,20 @@ ${errorList}
 
 Rewrite the email to satisfy ALL rules.
 
-Non-negotiables:
-- The body must include the exact lowercase phrase "like you" exactly once.
-- The sentence containing "like you" must be specific and NOT include any banned generic phrases (passionate about, think a lot about, reaching out, aligned with, resonates, inspired, keen to, deeply appreciate).
-- Do not use any banned clichés listed above.
+Critical fixes needed:
+- The body MUST include the exact phrase "Like you," (capital L, comma after) exactly once.
+- The sentence containing "Like you," must be specific and NOT include any banned generic phrases.
+- Do not use any banned clichés.
 - End with exactly "Best," and nothing after.
-- Word count must be between 110 and 160 words.
+- Word count must be between 90 and 170 words.
+- No bracket placeholders like [Name].
+- No em-dashes (—).
+
 Return ONLY valid JSON with keys "subject" and "body".`;
 }
 
 // ============= HELPERS =============
 
-// Determine connection type used based on email content and inputs
-function detectConnectionType(
-  body: string, 
-  researchedFacts: string[], 
-  sharedAffiliation: any
-): 'domain' | 'research' | 'role' | 'affiliation' {
-  const lowerBody = body.toLowerCase();
-  
-  // Check for affiliation keywords
-  if (sharedAffiliation && sharedAffiliation.name) {
-    const affiliationName = sharedAffiliation.name.toLowerCase();
-    if (lowerBody.includes(affiliationName)) {
-      return 'affiliation';
-    }
-  }
-  
-  // Check if researched facts are referenced
-  if (researchedFacts.length > 0) {
-    for (const fact of researchedFacts) {
-      const keywords = fact.toLowerCase().split(' ').filter(w => w.length > 5);
-      for (const keyword of keywords.slice(0, 3)) {
-        if (lowerBody.includes(keyword)) {
-          return 'research';
-        }
-      }
-    }
-  }
-  
-  // Default to domain (challenge/tension) or role
-  return 'domain';
-}
-
-// Map ask type to readable text
 function getAskTypeLabel(askType: string): string {
   const labels: Record<string, string> = {
     'chat': 'a short introductory chat',
@@ -324,7 +337,6 @@ function getAskTypeLabel(askType: string): string {
   return labels[askType] || askType;
 }
 
-// Map affiliation type to readable text
 function getAffiliationTypeLabel(type: string): string {
   const labels: Record<string, string> = {
     'school': 'same school/university',
@@ -340,7 +352,8 @@ function getAffiliationTypeLabel(type: string): string {
 async function callLLM(
   LOVABLE_API_KEY: string,
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  modelName: string = MODEL_NAME
 ): Promise<string> {
   const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
     method: 'POST',
@@ -349,7 +362,7 @@ async function callLLM(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: MODEL_NAME,
+      model: modelName,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -367,6 +380,242 @@ async function callLLM(
   return data.choices[0].message.content;
 }
 
+// ============= EXA INTEGRATION =============
+
+async function exaSearch(query: string, exaApiKey: string): Promise<ExaResult[]> {
+  console.log('Exa search query:', query);
+  
+  const response = await fetch('https://api.exa.ai/search', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${exaApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query,
+      numResults: 8,
+      type: 'neural',
+      useAutoprompt: true,
+      contents: {
+        text: {
+          maxCharacters: 2000,
+        },
+        highlights: {
+          numSentences: 3,
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Exa search error:', response.status, errorText);
+    return [];
+  }
+
+  const data = await response.json();
+  console.log('Exa search returned', data.results?.length || 0, 'results');
+  
+  return (data.results || []).map((r: any) => ({
+    url: r.url || '',
+    title: r.title || '',
+    snippet: r.highlights?.join(' ') || r.text?.substring(0, 500) || '',
+    text: r.text || '',
+  }));
+}
+
+async function exaGetContents(urls: string[], exaApiKey: string): Promise<ExaResult[]> {
+  if (urls.length === 0) return [];
+  
+  console.log('Exa getContents for URLs:', urls);
+  
+  const response = await fetch('https://api.exa.ai/contents', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${exaApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ids: urls,
+      text: {
+        maxCharacters: 3000,
+      },
+      highlights: {
+        numSentences: 5,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Exa contents error:', response.status, errorText);
+    return [];
+  }
+
+  const data = await response.json();
+  console.log('Exa contents returned', data.results?.length || 0, 'results');
+  
+  return (data.results || []).map((r: any) => ({
+    url: r.url || '',
+    title: r.title || '',
+    snippet: r.highlights?.join(' ') || '',
+    text: r.text || '',
+  }));
+}
+
+async function performExaResearch(
+  recipientName: string,
+  recipientCompany: string,
+  reachingOutBecause: string,
+  exaApiKey: string
+): Promise<{ queries: string[]; results: ExaResult[]; selectedUrls: string[] }> {
+  const queries: string[] = [];
+  let allResults: ExaResult[] = [];
+  
+  // Query 1: Primary search for interviews, podcasts, talks, essays
+  const query1 = `${recipientName} ${recipientCompany} interview OR podcast OR talk OR keynote OR wrote OR essay OR blog OR "I think" OR "I believe"`;
+  queries.push(query1);
+  
+  const results1 = await exaSearch(query1, exaApiKey);
+  allResults = [...results1];
+  
+  // If results look generic (mostly LinkedIn or company pages), try query 2
+  const hasSpecificContent = results1.some(r => 
+    !r.url.includes('linkedin.com') && 
+    !r.url.includes('/about') &&
+    (r.url.includes('podcast') || r.url.includes('interview') || r.url.includes('blog'))
+  );
+  
+  if (!hasSpecificContent && results1.length < 4) {
+    const query2 = `${recipientName} ${recipientCompany} (podcast OR keynote OR interview OR "transcript" OR "Q&A")`;
+    queries.push(query2);
+    
+    const results2 = await exaSearch(query2, exaApiKey);
+    // Dedupe by URL
+    for (const r of results2) {
+      if (!allResults.find(existing => existing.url === r.url)) {
+        allResults.push(r);
+      }
+    }
+  }
+  
+  // Take top 8 results
+  allResults = allResults.slice(0, 8);
+  
+  // Select top 3 URLs for content extraction (prioritize non-LinkedIn)
+  const sortedForSelection = [...allResults].sort((a, b) => {
+    const aScore = a.url.includes('linkedin.com') ? 0 : 1;
+    const bScore = b.url.includes('linkedin.com') ? 0 : 1;
+    return bScore - aScore;
+  });
+  
+  const selectedUrls = sortedForSelection.slice(0, 3).map(r => r.url);
+  
+  // Get full content for selected URLs
+  if (selectedUrls.length > 0) {
+    const contentResults = await exaGetContents(selectedUrls, exaApiKey);
+    
+    // Merge content back into results
+    for (const content of contentResults) {
+      const idx = allResults.findIndex(r => r.url === content.url);
+      if (idx >= 0) {
+        allResults[idx].text = content.text;
+        allResults[idx].snippet = content.snippet || allResults[idx].snippet;
+      }
+    }
+  }
+  
+  return { queries, results: allResults, selectedUrls };
+}
+
+async function extractHookFacts(
+  recipientName: string,
+  recipientRole: string,
+  recipientCompany: string,
+  exaResults: ExaResult[],
+  selectedUrls: string[],
+  reachingOutBecause: string,
+  LOVABLE_API_KEY: string
+): Promise<HookFact[]> {
+  if (exaResults.length === 0) {
+    console.log('No Exa results to extract facts from');
+    return [];
+  }
+  
+  // Build context from selected sources
+  const selectedResults = exaResults.filter(r => selectedUrls.includes(r.url));
+  if (selectedResults.length === 0) {
+    console.log('No selected sources found');
+    return [];
+  }
+  
+  const sourcesContext = selectedResults.map((r, i) => `
+SOURCE ${i + 1}: ${r.url}
+Title: ${r.title}
+Content: ${r.text || r.snippet || '(no content available)'}
+`).join('\n---\n');
+
+  const extractionPrompt = `You are analyzing public content about ${recipientName}, ${recipientRole} at ${recipientCompany}.
+
+The sender wants to reach out because: "${reachingOutBecause}"
+
+Here are the sources found:
+${sourcesContext}
+
+Extract 0-2 "hook facts" that could be used to personalize a cold email. A hook fact is a specific, non-generic piece of information that:
+1. Shows something distinctive about the recipient's thinking, work, or experiences
+2. Could create a genuine connection point with the sender
+3. Is NOT just their job title, timeline, or "co-founded X" unless there's a concrete angle
+
+STRICT REQUIREMENTS for each fact:
+- claim: A specific, interesting observation (not generic)
+- source_url: The exact URL from the sources above
+- evidence_quote: 8-25 words pulled DIRECTLY from the source content that supports the claim. This MUST be a real quote you can see in the content.
+- why_relevant: Why this matters for the outreach
+- bridge_type: One of "intent" (connects to sender's goal), "credibility" (parallel experience), or "curiosity" (interesting conversation starter)
+- hook_score: 1-5 (5 = highly specific and relevant)
+
+IMPORTANT:
+- If you cannot provide a SHORT evidence_quote (8-25 words) that actually appears in the source, DO NOT include the fact
+- Avoid generic facts like job titles or company founding dates
+- Return EMPTY array [] if no specific, supported facts can be found
+- Maximum 2 facts
+
+Return ONLY valid JSON in this format:
+{
+  "facts": [
+    {
+      "claim": "...",
+      "source_url": "...",
+      "evidence_quote": "...",
+      "why_relevant": "...",
+      "bridge_type": "intent|credibility|curiosity",
+      "hook_score": 1
+    }
+  ],
+  "notes": "Optional notes about why you included or excluded certain facts"
+}`;
+
+  try {
+    const response = await callLLM(
+      LOVABLE_API_KEY,
+      'You are a research analyst extracting specific, verifiable facts from source documents. Be rigorous about evidence.',
+      extractionPrompt,
+      RESEARCH_MODEL_NAME
+    );
+    
+    const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    
+    const facts: HookFact[] = (parsed.facts || []).slice(0, 2);
+    console.log('Extracted hook facts:', facts.length);
+    return facts;
+  } catch (e) {
+    console.error('Failed to extract hook facts:', e);
+    return [];
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -377,7 +626,6 @@ serve(async (req) => {
   try {
     const body = await req.json();
     
-    // New research-based inputs
     const recipientName = body.recipientName || '';
     const recipientCompany = body.recipientCompany || '';
     const recipientRole = body.recipientRole || '';
@@ -385,12 +633,11 @@ serve(async (req) => {
     const askType = body.askType || 'chat';
     const reachingOutBecause = body.reachingOutBecause || '';
     const credibilityStory = body.credibilityStory || '';
-    
-    // Shared affiliation (optional, user-declared)
     const sharedAffiliation = body.sharedAffiliation || null;
     
     const source = body.source || 'app';
     const scenarioName = body.scenario_name || body.scenarioName || null;
+    const sessionId = body.sessionId || null;
 
     // Input validation
     if (!recipientName || recipientName.length < 2 || recipientName.length > 100) {
@@ -430,7 +677,6 @@ serve(async (req) => {
 
     const recipientFirstName = recipientName.split(' ')[0];
 
-    // Store input for logging
     const inputJson = {
       recipientName,
       recipientCompany,
@@ -443,6 +689,8 @@ serve(async (req) => {
     };
 
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+    const EXA_API_KEY = Deno.env.get('EXA_API_KEY');
+    
     if (!LOVABLE_API_KEY) {
       console.error('LOVABLE_API_KEY is not configured');
       return new Response(
@@ -451,71 +699,50 @@ serve(async (req) => {
       );
     }
 
-    // Step 1: Research the recipient using the public link
-    console.log('Step 1: Researching recipient from:', recipientLink);
+    // ============= STEP 1: Exa Research =============
+    let exaQueries: string[] = [];
+    let exaResults: ExaResult[] = [];
+    let selectedSources: string[] = [];
+    let hookFacts: HookFact[] = [];
     
-    const researchPrompt = `I need to write a cold email to ${recipientName}, who is ${recipientRole} at ${recipientCompany}.
-
-Here is a public link about them: ${recipientLink}
-
-Based on this link and any public information you can find about this person, please extract 2-3 specific, relevant facts that could be used to personalize a cold email. Focus on:
-- Recent projects, achievements, or initiatives they've led
-- Their professional background or career path
-- Any public talks, articles, or interviews
-- Their company's recent news or focus areas
-
-Return ONLY a JSON object in this exact format:
-{
-  "facts": [
-    "Specific fact 1 about the person or their work",
-    "Specific fact 2 about the person or their work"
-  ],
-  "summary": "One sentence summary of who this person is professionally"
-}
-
-Only return facts you are reasonably confident about based on public information. Do not invent or assume private details.`;
-
-    const researchResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: MODEL_NAME,
-        messages: [
-          { role: 'system', content: 'You are a research assistant. Extract specific, factual information about people from public sources. Be accurate and do not invent information.' },
-          { role: 'user', content: researchPrompt }
-        ],
-      }),
-    });
-
-    let researchedFacts: string[] = [];
-    let recipientSummary = '';
-
-    if (researchResponse.ok) {
-      const researchData = await researchResponse.json();
-      const researchContent = researchData.choices[0].message.content;
-      console.log('Research response:', researchContent);
+    if (EXA_API_KEY) {
+      console.log('Step 1: Performing Exa research...');
       
       try {
-        const cleanedResearch = researchContent.replace(/```json\n?|\n?```/g, '').trim();
-        const parsed = JSON.parse(cleanedResearch);
-        researchedFacts = parsed.facts || [];
-        recipientSummary = parsed.summary || '';
-        console.log('Extracted facts:', researchedFacts);
+        const exaData = await performExaResearch(
+          recipientName,
+          recipientCompany,
+          reachingOutBecause,
+          EXA_API_KEY
+        );
+        
+        exaQueries = exaData.queries;
+        exaResults = exaData.results;
+        selectedSources = exaData.selectedUrls;
+        
+        console.log(`Exa returned ${exaResults.length} results, selected ${selectedSources.length} for extraction`);
+        
+        // Extract hook facts from the content
+        hookFacts = await extractHookFacts(
+          recipientName,
+          recipientRole,
+          recipientCompany,
+          exaResults,
+          selectedSources,
+          reachingOutBecause,
+          LOVABLE_API_KEY
+        );
+        
+        console.log(`Extracted ${hookFacts.length} hook facts`);
       } catch (e) {
-        console.log('Could not parse research response, continuing without specific facts');
+        console.error('Exa research failed:', e);
       }
     } else {
-      console.log('Research step failed, continuing with basic info');
+      console.log('EXA_API_KEY not configured, skipping Exa research');
     }
 
-    // Step 2: Generate the email using the research AND shared affiliation
-    console.log('Step 2: Generating email with research...');
-    if (sharedAffiliation) {
-      console.log('Shared affiliation provided:', sharedAffiliation);
-    }
+    // ============= STEP 2: Generate Email =============
+    console.log('Step 2: Generating email...');
     
     // Build shared affiliation section if provided
     let sharedAffiliationSection = '';
@@ -525,12 +752,35 @@ Only return facts you are reasonably confident about based on public information
         .join(', ');
       
       sharedAffiliationSection = `
-SHARED AFFILIATION (user-declared, use ONLY as last resort for "like you" connection):
+SHARED AFFILIATION (user-declared, use ONLY as last resort for "Like you," connection):
 - Connection type: ${affiliationTypes}
 - Shared institution or organization: ${sharedAffiliation.name}${sharedAffiliation.detail ? `
 - Sender's connection: ${sharedAffiliation.detail}` : ''}
 
-IMPORTANT: Only use this shared affiliation if no stronger domain/challenge parallel exists. If used, express it with "like you" phrasing (e.g., "Like you, I came up through ${sharedAffiliation.name}..."). Do NOT use "As a fellow..." phrasing.`;
+IMPORTANT: Only use this shared affiliation if no stronger craft/problem/constraint parallel exists.`;
+    }
+
+    // Build hook facts section
+    let hookFactsSection = '';
+    if (hookFacts.length > 0) {
+      hookFactsSection = `
+RESEARCHED HOOK FACTS (use 1-2 to create the "Like you," bridge):
+${hookFacts.map((f, i) => `
+${i + 1}. Claim: ${f.claim}
+   Source: ${f.source_url}
+   Evidence: "${f.evidence_quote}"
+   Relevance: ${f.why_relevant}
+   Bridge type: ${f.bridge_type}
+`).join('')}
+
+Use these facts to create a genuine connection, not as praise or résumé summary.`;
+    } else {
+      hookFactsSection = `
+NO RESEARCHED FACTS AVAILABLE.
+Create the "Like you," bridge using ONLY:
+- The sender's credibility story
+- The recipient's role and company context
+Do NOT imply you did specific research on the recipient.`;
     }
 
     const userPrompt = `Generate a cold email with these details:
@@ -538,9 +788,7 @@ IMPORTANT: Only use this shared affiliation if no stronger domain/challenge para
 RECIPIENT:
 - Name: ${recipientName}
 - Role: ${recipientRole} at ${recipientCompany}
-- Public profile: ${recipientLink}
-${recipientSummary ? `- Summary: ${recipientSummary}` : ''}
-${researchedFacts.length > 0 ? `- Researched facts to reference:\n  ${researchedFacts.map((f, i) => `${i + 1}. ${f}`).join('\n  ')}` : ''}
+${hookFactsSection}
 ${sharedAffiliationSection}
 
 SENDER'S CONTEXT:
@@ -548,15 +796,15 @@ SENDER'S CONTEXT:
 - Reason for reaching out: ${reachingOutBecause}
 - Credibility story: ${credibilityStory}
 
-INSTRUCTIONS:
-- The email MUST include the exact phrase "like you" exactly once in the body
-- Prefer a "like you" connection based on shared domain or challenge from the sender's story
-- Use shared school/company/program only if no stronger parallel exists
-- The "like you" line should appear early (first or second paragraph)
+CRITICAL INSTRUCTIONS:
+- The email MUST include the exact phrase "Like you," (capital L, comma after) exactly once in the body
+- The "Like you," sentence should appear in the first or second paragraph
+- Priority for "Like you," bridge: craft/experience > problem space > constraints > shared institution
 - Make a specific ask related to "${getAskTypeLabel(askType)}"
-- Keep the body between 110-160 words
+- Keep the body between 90-170 words
 - Greeting must be "Hi ${recipientFirstName}," or "${recipientFirstName},"
 - End with exactly "Best," and nothing after
+- No bracket placeholders, no em-dashes
 
 Return your response in this exact JSON format:
 {
@@ -569,33 +817,33 @@ Only return the JSON, no other text.`;
     // Generate email with validation and retry logic
     let rawResponse: string;
     let validation: ValidationResult;
-    let validationErrorsFirstPass: string[] = [];
-    let validationErrorsRetry: string[] = [];
-    let retryUsed = false;
+    const enforcementResults: EnforcementResults = {
+      did_retry: false,
+      failures_first_pass: [],
+      failures_retry: [],
+    };
 
     try {
       console.log('Generating email (attempt 1)...');
       rawResponse = await callLLM(LOVABLE_API_KEY, SUPER_PROMPT, userPrompt);
       console.log('AI response:', rawResponse);
       
-      // Validate first attempt
       validation = validateEmail(rawResponse, recipientFirstName);
-      validationErrorsFirstPass = validation.errors;
+      enforcementResults.failures_first_pass = validation.errors;
       
       if (!validation.valid) {
         console.log('Validation failed (attempt 1):', validation.errors);
         
         // Retry with specific failure feedback
-        retryUsed = true;
+        enforcementResults.did_retry = true;
         const retryPrompt = userPrompt + buildRetryInstruction(validation.errors);
         
         console.log('Generating email (attempt 2 - retry)...');
         rawResponse = await callLLM(LOVABLE_API_KEY, SUPER_PROMPT, retryPrompt);
         console.log('AI response (retry):', rawResponse);
         
-        // Validate retry
         validation = validateEmail(rawResponse, recipientFirstName);
-        validationErrorsRetry = validation.errors;
+        enforcementResults.failures_retry = validation.errors;
         
         if (!validation.valid) {
           console.log('Validation still failed after retry:', validation.errors);
@@ -640,22 +888,21 @@ Only return the JSON, no other text.`;
     }
 
     const latencyMs = Date.now() - startTime;
-    const likeYouPresent = countLikeYou(emailData.body) === 1;
-    const connectionTypeUsed = detectConnectionType(emailData.body, researchedFacts, sharedAffiliation);
     const wordCount = countWords(emailData.body);
     const clicheCount = countCliches(emailData.subject + ' ' + emailData.body);
+    const likeYouCount = countLikeYouCapitalized(emailData.body);
 
     // Log analytics
     console.log('=== GENERATION ANALYTICS ===');
-    console.log(`validation_failed_first_pass: ${validationErrorsFirstPass.length > 0}`);
-    console.log(`retry_used: ${retryUsed}`);
-    console.log(`validation_errors_first_pass: ${JSON.stringify(validationErrorsFirstPass)}`);
-    console.log(`validation_errors_retry: ${JSON.stringify(validationErrorsRetry)}`);
-    console.log(`like_you_count: ${countLikeYou(emailData.body)}`);
+    console.log(`exa_queries: ${exaQueries.length}`);
+    console.log(`exa_results: ${exaResults.length}`);
+    console.log(`selected_sources: ${selectedSources.length}`);
+    console.log(`hook_facts: ${hookFacts.length}`);
+    console.log(`did_retry: ${enforcementResults.did_retry}`);
+    console.log(`failures_first_pass: ${JSON.stringify(enforcementResults.failures_first_pass)}`);
+    console.log(`like_you_count: ${likeYouCount}`);
     console.log(`word_count: ${wordCount}`);
-    console.log(`cliche_count: ${clicheCount}`);
-    console.log(`like_you_present: ${likeYouPresent}`);
-    console.log(`connection_type: ${connectionTypeUsed}`);
+    console.log(`validator_passed: ${validation.valid}`);
     console.log('============================');
 
     // Log to email_generations table
@@ -669,20 +916,13 @@ Only return the JSON, no other text.`;
         const { error: insertError } = await supabase
           .from('email_generations')
           .insert({
+            session_id: sessionId,
             source,
             scenario_name: scenarioName,
-            input_json: { 
-              ...inputJson, 
-              researchedFacts,
-              like_you_present: likeYouPresent,
-              retry_used: retryUsed,
-              connection_type_used: connectionTypeUsed,
-              validation_failed_first_pass: validationErrorsFirstPass.length > 0,
-              validation_errors_first_pass: validationErrorsFirstPass,
-              validation_errors_retry: validationErrorsRetry,
-            },
+            input_json: inputJson,
             prompt_version: PROMPT_VERSION,
             model_name: MODEL_NAME,
+            research_model_name: RESEARCH_MODEL_NAME,
             subject: emailData.subject,
             body: emailData.body,
             word_count: wordCount,
@@ -691,6 +931,12 @@ Only return the JSON, no other text.`;
             latency_ms: latencyMs,
             validator_passed: validation.valid,
             validator_errors: validation.valid ? null : validation.errors,
+            like_you_count: likeYouCount,
+            exa_queries: exaQueries,
+            exa_results: exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })),
+            selected_sources: selectedSources,
+            researched_facts: hookFacts,
+            enforcement_results: enforcementResults,
           });
 
         if (insertError) {
@@ -707,14 +953,23 @@ Only return the JSON, no other text.`;
       JSON.stringify({
         subject: emailData.subject,
         body: emailData.body,
-        researchedFacts,
-        likeYouPresent,
-        retryUsed,
-        connectionTypeUsed,
+        // Research data
+        exaQueries,
+        exaResults: exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })),
+        selectedSources,
+        hookFacts,
+        // Legacy compatibility
+        researchedFacts: hookFacts.map(f => f.claim),
+        // Enforcement
+        enforcementResults,
+        // Validation
         validatorPassed: validation.valid,
         validatorErrors: validation.valid ? null : validation.errors,
+        // Metrics
+        likeYouCount,
         wordCount,
         clicheCount,
+        retryUsed: enforcementResults.did_retry,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
