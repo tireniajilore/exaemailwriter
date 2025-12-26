@@ -1739,8 +1739,34 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
   };
 }
 
-function buildRetryInstruction(errors: string[]): string {
+function buildRetryInstruction(errors: string[], recipientFirstName?: string): string {
   const errorList = errors.map(e => `- ${e}`).join('\n');
+  
+  // Check for greeting error
+  const greetingError = errors.find(e => e.includes('Greeting must start with'));
+  let greetingGuidance = '';
+  
+  if (greetingError && recipientFirstName) {
+    greetingGuidance = `
+CRITICAL - GREETING REQUIRED:
+Your email body MUST start with "Hi ${recipientFirstName}," on its own line.
+
+CORRECT FORMAT:
+Hi ${recipientFirstName},
+
+[First sentence here - what you're offering/doing, NOT who you are]
+
+Like you, [natural bridge sentence]...
+
+[Brief credibility]...
+
+[Ask]
+
+Best,
+
+DO NOT start the body with content directly. The greeting line "Hi ${recipientFirstName}," is REQUIRED as the very first line.
+`;
+  }
   
   // Extract specific robotic phrase from error message
   const roboticError = errors.find(e => e.includes('Sounds robotic/generic'));
@@ -1773,7 +1799,7 @@ CRITICAL - OPENING SENTENCE FIX:
 DO NOT START WITH: "I read...", "I saw...", "I'll keep this short", "Quick question", "I wanted to reach out"
 DO NOT START WITH: "I'm a...", "I'm an...", "I just finished...", "I'm working on...", "My name is..."
 
-YOUR FIRST SENTENCE MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
+YOUR FIRST SENTENCE (after "Hi [Name],") MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
 ❌ "I'm a VC Fellow at PayPal Ventures..." 
 ✅ "PayPal Ventures is deepening its gig economy thesis in LATAM."
 
@@ -1794,22 +1820,30 @@ Lead with the OFFER/EVENT/ASK or a SPECIFIC DETAIL from their work. Save your cr
 CRITICAL - SELF-INTRO OPENING FIX:
 DO NOT START WITH: "I'm a...", "I just finished...", "I'm working on...", "My name is..."
 
-YOUR FIRST SENTENCE MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
+YOUR FIRST SENTENCE (after "Hi [Name],") MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
 ❌ "I'm a VC Fellow at PayPal Ventures..." 
 ✅ "PayPal Ventures is deepening its gig economy thesis in LATAM."
 
 ❌ "I'm working on a short film about underdogs..."
 ✅ "I have a two-minute proof-of-concept for an underdog film."
 
+❌ "I just finished my dissertation research..."
+✅ "My dissertation research on GDPR enforcement just wrapped up, and I have fresh interview data to share."
+
 Lead with the OFFER/EVENT/ASK. Save your credentials for paragraph 2.
 `;
   }
+
+  // Build greeting reminder for HARD FIXES
+  const greetingReminder = recipientFirstName 
+    ? `- Email body MUST start with "Hi ${recipientFirstName}," on its own line`
+    : '- Email body MUST start with "Hi [Name]," on its own line';
 
   return `
 
 REWRITE REQUIRED — your previous output had issues:
 ${errorList}
-${roboticGuidance}${openingGuidance}
+${greetingGuidance}${roboticGuidance}${openingGuidance}
 VOICE REMINDER (most important):
 - Write like you're texting a smart friend, not drafting a memo
 - The "Like you," line should be the most NATURAL sentence, not the most formal
@@ -1817,6 +1851,7 @@ VOICE REMINDER (most important):
 - Reference specific things (names, projects, numbers) not abstractions
 
 HARD FIXES:
+${greetingReminder}
 - "Like you," must appear exactly once (capital L, comma after)
 - "Like you," sentence must be under 25 words and feel natural
 - Readable in under 20 seconds. Shorter is better. Do not pad.
@@ -2325,7 +2360,7 @@ Return JSON only:
         console.log('Validation failed (attempt 1):', validation.errors);
         
         enforcementResults.did_retry = true;
-        const retryPrompt = userPrompt + buildRetryInstruction(validation.errors);
+        const retryPrompt = userPrompt + buildRetryInstruction(validation.errors, recipientFirstName);
         
         console.log('Generating email (attempt 2 - retry)...');
         rawResponse = await callLLM(LOVABLE_API_KEY, SUPER_PROMPT, retryPrompt);
