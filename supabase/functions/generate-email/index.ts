@@ -28,22 +28,25 @@ Simple words. Short sentences. Human reactions.
 Direct, slightly under-polished, and honest.
 Avoid sounding impressive. Aim to sound real.
 
-OPENING RULES — START WITH VALUE:
-The first sentence must give the reader something they didn't know.
+OPENING RULES — START WITH SENDER-SIDE NEWS:
+The FIRST sentence after the greeting must contain NEW INFORMATION. 
+Default to SENDER-SIDE news: your event, your ask, your offer, your product.
 
-This can be:
-- A specific fact, observation, or insight about their work
-- Something valuable or surprising the sender offers
+BANNED FIRST-SENTENCE OPENERS (will cause rejection):
+❌ Discovery openers: "I read...", "I saw...", "I came across...", "I found...", "I noticed..."
+❌ Meta openers: "I'll keep this short.", "Quick question.", "Quick note.", "Random question."
+❌ Reach-out openers: "I wanted to reach out...", "Reaching out because...", "I'm writing because..."
+❌ Hedging: "This might be out of the blue..."
+❌ Flattery: "I'm a huge fan...", "I've long admired..."
 
-NOT:
-- Hedging ("This might be out of the blue...")
-- Self-introduction ("My name is...")
-- Flattery ("I'm a huge fan...")
+WHY: "I saw your article" tells them nothing new—they know they wrote it.
 
-Good openers:
-❌ "This might be out of the blue, but I read your article..."
-✅ "Your piece on device access cited a stat I haven't seen elsewhere."
-✅ "We're bringing 500 Black MBA students together at Stanford this fall."
+ALLOWED FIRST SENTENCES:
+✅ "Stanford's Black Business Conference is back in October—500 Black MBAs in the room." (sender-side news)
+✅ "The stat in your Afrotech piece—40% of Black households lack a device—stuck with me." (recipient's work: the DETAIL itself, not "I read")
+✅ "We're building a tool that does X, and your team at Y came up." (sender-side + reason)
+
+RULE: If you mention their work, lead with the SPECIFIC DETAIL, not the act of reading it.
 
 HARD AVOIDS (DO NOT USE):
 - "I would appreciate the opportunity…"
@@ -61,11 +64,11 @@ HARD AVOIDS (DO NOT USE):
 If it sounds like an MBA email, rewrite it.
 
 PREFERRED PHRASES (USE THESE INSTEAD):
-- "I'll keep this short."
 - "Would you be up for a quick call?"
 - "Any chance you'd be open to…"
 - "Curious if you'd want to chat"
 - "Thanks for reading this."
+Note: "I'll keep this short" is fine AFTER the first sentence, not AS the first sentence.
 
 SIMPLE LANGUAGE RULES:
 - Use "get" not "obtain" or "acquire"
@@ -1585,6 +1588,49 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     }
   }
 
+  // ============= OPENING SENTENCE VALIDATION =============
+  // Extract first content sentence (after greeting)
+  const contentLines = bodyLines.slice(1).filter(l => l !== 'Best,'); // Skip greeting and sign-off
+  if (contentLines.length > 0) {
+    const firstParagraph = contentLines[0];
+    // Get first sentence from first paragraph
+    const firstSentenceMatch = firstParagraph.match(/^[^.!?]+[.!?]/);
+    const firstSentence = firstSentenceMatch ? firstSentenceMatch[0].toLowerCase() : firstParagraph.toLowerCase();
+    
+    // Banned opening patterns (discovery openers)
+    const BANNED_OPENING_PATTERNS = [
+      /^i read\b/,
+      /^i saw\b/,
+      /^i came across\b/,
+      /^i found\b/,
+      /^i noticed\b/,
+      /^i stumbled\b/,
+      /^i discovered\b/,
+      /^i was reading\b/,
+      /^i was looking\b/,
+      /^i wanted to reach out\b/,
+      /^reaching out\b/,
+      /^i'm reaching out\b/,
+      /^i'm writing\b/,
+      /^i'll keep this short\b/,
+      /^quick question\b/,
+      /^quick note\b/,
+      /^random question\b/,
+      /^this might be out of the blue\b/,
+      /^i'm a huge fan\b/,
+      /^i've long admired\b/,
+      /^i've been following\b/,
+    ];
+    
+    for (const pattern of BANNED_OPENING_PATTERNS) {
+      if (pattern.test(firstSentence)) {
+        const patternText = pattern.toString().replace(/^\/\^|\\b\/$/g, '').replace(/\\/g, '');
+        errors.push(`Opening sentence starts with "${patternText}..." — lead with sender-side news or a specific detail, not the act of reading/reaching out`);
+        break;
+      }
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -1618,11 +1664,29 @@ ${badPhrase ? `\nTHE PHRASE "${badPhrase}" MUST NOT APPEAR IN YOUR OUTPUT.` : ''
 `;
   }
 
+  // Check for opening sentence error
+  const openingError = errors.find(e => e.includes('Opening sentence starts with'));
+  let openingGuidance = '';
+  
+  if (openingError) {
+    openingGuidance = `
+CRITICAL - OPENING SENTENCE FIX:
+DO NOT START WITH: "I read...", "I saw...", "I'll keep this short", "Quick question", "I wanted to reach out"
+
+YOUR FIRST SENTENCE MUST BE SENDER-SIDE NEWS:
+✅ "Stanford's Black Business Conference is back in October—we'll have 500 Black MBAs there."
+✅ "We're building X and looking for advisors who've done Y."
+✅ "The stat in your Afrotech piece—40% lack a device—stuck with me." (the detail, not "I read")
+
+Lead with what YOU offer or a SPECIFIC detail from their work—not the act of reading it.
+`;
+  }
+
   return `
 
 REWRITE REQUIRED — your previous output had issues:
 ${errorList}
-${roboticGuidance}
+${roboticGuidance}${openingGuidance}
 VOICE REMINDER (most important):
 - Write like you're texting a smart friend, not drafting a memo
 - The "Like you," line should be the most NATURAL sentence, not the most formal
