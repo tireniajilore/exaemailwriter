@@ -1530,15 +1530,27 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
 
 function buildRetryInstruction(errors: string[]): string {
   const errorList = errors.map(e => `- ${e}`).join('\n');
-  const hasRoboticError = errors.some(e => e.includes('robotic') || e.includes('generic'));
   
-  const roboticGuidance = hasRoboticError ? `
-ROBOTIC VOICE FIX:
-You used a phrase that sounds like AI-generated filler. Replace it with:
-- A direct statement ("I build X" not "I'm passionate about X")
-- A specific detail ("Your talk at Y" not "I came across your work")
-- Casual phrasing ("Wanted to ask" not "I wanted to reach out")
-` : '';
+  // Extract specific robotic phrase from error message
+  const roboticError = errors.find(e => e.includes('Sounds robotic/generic'));
+  let roboticGuidance = '';
+  
+  if (roboticError) {
+    // Extract the phrase from: 'Sounds robotic/generic. Remove: "caught my attention". Write like...'
+    const phraseMatch = roboticError.match(/Remove: "([^"]+)"/);
+    const badPhrase = phraseMatch ? phraseMatch[1] : null;
+    
+    roboticGuidance = `
+CRITICAL - ROBOTIC VOICE FIX:
+${badPhrase ? `DO NOT USE THIS PHRASE: "${badPhrase}"` : 'Remove the robotic phrase.'}
+
+Instead:
+- Reference specific content: "Your Afrotech piece on device access" (not "I came across your work")
+- Make direct statements: "I organize the Stanford Black Business Conference" (not "I wanted to reach out")
+- Be casual: "Wanted to ask" (not "I would love to discuss")
+${badPhrase ? `\nTHE PHRASE "${badPhrase}" MUST NOT APPEAR IN YOUR OUTPUT.` : ''}
+`;
+  }
 
   return `
 
