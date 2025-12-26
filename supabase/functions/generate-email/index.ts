@@ -763,6 +763,121 @@ async function exaSearchWithContent(query: string, exaApiKey: string, numResults
   }));
 }
 
+// ============= FIRECRAWL ENRICHMENT =============
+
+function isContentAbstract(text: string): boolean {
+  // Content is "abstract" if it's short or lacks concrete indicators
+  const wordCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
+  
+  // Too short - definitely needs enrichment
+  if (wordCount < 200) return true;
+  
+  // Check for concrete evidence indicators
+  const concreteIndicators = [
+    // Direct quotes
+    /[""][^""]{20,}[""]/, // Quoted text of 20+ chars
+    /'[^']{20,}'/, // Single-quoted text
+    // Named artifacts
+    /\b(podcast|interview|talk|keynote|essay|article|book|paper)\b.*["'][^"']+["']/i,
+    // Specific numbers/dates
+    /\b(in \d{4}|january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}/i,
+    /\$[\d.,]+\s*(million|billion|M|B)/i,
+    // First person statements
+    /\b(I think|I believe|we decided|I realized|we learned|I said|I wrote)\b/i,
+  ];
+  
+  const hasConcreteEvidence = concreteIndicators.some(pattern => pattern.test(text));
+  
+  // If medium-length but no concrete evidence, still abstract
+  if (wordCount < 500 && !hasConcreteEvidence) return true;
+  
+  return false;
+}
+
+async function enrichWithFirecrawl(url: string): Promise<string | null> {
+  const firecrawlApiKey = Deno.env.get('FIRECRAWL_API_KEY');
+  
+  if (!firecrawlApiKey) {
+    console.log('FIRECRAWL_API_KEY not configured, skipping enrichment');
+    return null;
+  }
+  
+  console.log('Firecrawl: fetching full content for', url);
+  
+  try {
+    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${firecrawlApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url,
+        formats: ['markdown'],
+        onlyMainContent: true,
+        waitFor: 2000,
+      }),
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Firecrawl error:', response.status, errorText);
+      return null;
+    }
+    
+    const data = await response.json();
+    const markdown = data.data?.markdown || data.markdown;
+    
+    if (markdown) {
+      console.log('Firecrawl: got', markdown.length, 'chars for', url);
+      return markdown;
+    }
+    
+    return null;
+  } catch (e) {
+    console.error('Firecrawl fetch error:', e);
+    return null;
+  }
+}
+
+async function enrichAbstractCandidates(
+  eligibleCandidates: CandidateUrl[],
+  maxEnrichments: number = 3
+): Promise<CandidateUrl[]> {
+  console.log('=== Stage 5.5: Firecrawl Enrichment ===');
+  
+  const enrichedCandidates: CandidateUrl[] = [];
+  let enrichmentCount = 0;
+  
+  for (const candidate of eligibleCandidates) {
+    // Check if content is abstract and needs enrichment
+    if (isContentAbstract(candidate.text) && enrichmentCount < maxEnrichments) {
+      console.log(`Content abstract for ${candidate.url}, attempting Firecrawl enrichment`);
+      
+      const enrichedContent = await enrichWithFirecrawl(candidate.url);
+      
+      if (enrichedContent && enrichedContent.length > candidate.text.length) {
+        enrichedCandidates.push({
+          ...candidate,
+          text: enrichedContent.substring(0, 8000), // Cap at 8k chars
+          reasons: [...candidate.reasons, 'ENRICHED: Firecrawl fetched full content'],
+        });
+        enrichmentCount++;
+        console.log(`Enriched ${candidate.url}: ${candidate.text.length} -> ${enrichedContent.length} chars`);
+      } else {
+        // Keep original if enrichment failed
+        enrichedCandidates.push(candidate);
+      }
+    } else {
+      // Content is concrete enough, keep as-is
+      enrichedCandidates.push(candidate);
+    }
+  }
+  
+  console.log(`Enriched ${enrichmentCount} of ${eligibleCandidates.length} candidates`);
+  return enrichedCandidates;
+}
+
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(w => w.length > 0).length;
 }
@@ -1107,12 +1222,19 @@ async function performV2Research(
     console.log('Early stop: enough eligible candidates');
   }
   
+  // ============= STAGE 5.5: Firecrawl Enrichment =============
+  // For candidates that passed but have abstract/short content, fetch full content via Firecrawl
+  const enrichedCandidates = await enrichAbstractCandidates(
+    eligibleCandidates.slice(0, 6), // Cap at 6 for enrichment
+    3 // Max 3 Firecrawl calls to limit latency/cost
+  );
+  
   // ============= STAGE 6: Hook Pack extraction =============
   const hookPacks = await extractHookPacks(
     recipientName,
     recipientRole,
     recipientCompany,
-    eligibleCandidates.slice(0, 6), // Cap at 6 for content fetch
+    enrichedCandidates, // Use enriched candidates
     hypotheses,
     credibilityStory,
     LOVABLE_API_KEY
