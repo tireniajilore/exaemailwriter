@@ -516,7 +516,7 @@ async function firecrawlScrape(url: string, firecrawlApiKey: string): Promise<{ 
         url,
         formats: ['markdown'],
         onlyMainContent: true,
-        waitFor: 2000,
+        waitFor: 1000,
       }),
     });
 
@@ -612,8 +612,15 @@ async function performResearch(
   const firecrawlContents: FirecrawlContent[] = [];
   
   if (firecrawlApiKey && selectedUrls.length > 0) {
-    for (const url of selectedUrls) {
-      const result = await firecrawlScrape(url, firecrawlApiKey);
+    // Parallelize Firecrawl calls for ~3x speedup
+    console.log(`Scraping ${selectedUrls.length} URLs in parallel...`);
+    const scrapePromises = selectedUrls.map(url => firecrawlScrape(url, firecrawlApiKey));
+    const scrapeResults = await Promise.all(scrapePromises);
+    
+    // Process results
+    for (let i = 0; i < selectedUrls.length; i++) {
+      const url = selectedUrls[i];
+      const result = scrapeResults[i];
       
       if (result && result.markdown.length >= 500) {
         firecrawlContents.push({
