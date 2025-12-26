@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PROMPT_VERSION = 'v4.0-exa-likeyou';
+const PROMPT_VERSION = 'v5.0-firecrawl';
 const MODEL_NAME = 'google/gemini-2.5-flash';
 const RESEARCH_MODEL_NAME = 'google/gemini-2.5-flash';
 
@@ -127,7 +127,13 @@ interface ExaResult {
   url: string;
   title: string;
   snippet: string;
-  text?: string;
+}
+
+interface FirecrawlContent {
+  url: string;
+  title: string;
+  markdown: string;
+  source: 'firecrawl' | 'snippet_fallback';
 }
 
 interface EnforcementResults {
@@ -380,7 +386,78 @@ async function callLLM(
   return data.choices[0].message.content;
 }
 
-// ============= EXA INTEGRATION =============
+// ============= URL FILTERING & SCORING =============
+
+const BLOCKED_DOMAINS = [
+  'youtube.com',
+  'youtu.be',
+  'twitter.com',
+  'x.com',
+  'linkedin.com',
+  'facebook.com',
+  'instagram.com',
+  'tiktok.com',
+];
+
+const HIGH_PRIORITY_PATTERNS = [
+  'podcast',
+  'interview',
+  'transcript',
+  'keynote',
+  'talk',
+  'essay',
+  'blog',
+  'article',
+  'q-a',
+  'qa',
+  'fireside',
+  'conversation',
+];
+
+const LOW_PRIORITY_PATTERNS = [
+  '/about',
+  '/team',
+  '/leadership',
+  '/executive',
+  '/press-release',
+  '/news/',
+];
+
+function isBlockedUrl(url: string): boolean {
+  const lowerUrl = url.toLowerCase();
+  return BLOCKED_DOMAINS.some(domain => lowerUrl.includes(domain));
+}
+
+function scoreSourceUrl(url: string, title: string): number {
+  const lowerUrl = url.toLowerCase();
+  const lowerTitle = title.toLowerCase();
+  let score = 50; // Base score
+  
+  // High priority patterns boost score
+  for (const pattern of HIGH_PRIORITY_PATTERNS) {
+    if (lowerUrl.includes(pattern) || lowerTitle.includes(pattern)) {
+      score += 20;
+      break;
+    }
+  }
+  
+  // Low priority patterns reduce score
+  for (const pattern of LOW_PRIORITY_PATTERNS) {
+    if (lowerUrl.includes(pattern)) {
+      score -= 20;
+      break;
+    }
+  }
+  
+  // Company pages are lower priority
+  if (lowerUrl.includes('/about') || lowerUrl.includes('/team')) {
+    score -= 15;
+  }
+  
+  return score;
+}
+
+// ============= EXA SEARCH (Discovery Only) =============
 
 async function exaSearch(query: string, exaApiKey: string): Promise<ExaResult[]> {
   console.log('Exa search query:', query);
@@ -398,7 +475,7 @@ async function exaSearch(query: string, exaApiKey: string): Promise<ExaResult[]>
       useAutoprompt: true,
       contents: {
         text: {
-          maxCharacters: 2000,
+          maxCharacters: 500, // Just for snippets, not full content
         },
         highlights: {
           numSentences: 3,
@@ -420,74 +497,87 @@ async function exaSearch(query: string, exaApiKey: string): Promise<ExaResult[]>
     url: r.url || '',
     title: r.title || '',
     snippet: r.highlights?.join(' ') || r.text?.substring(0, 500) || '',
-    text: r.text || '',
   }));
 }
 
-async function exaGetContents(urls: string[], exaApiKey: string): Promise<ExaResult[]> {
-  if (urls.length === 0) return [];
-  
-  console.log('Exa getContents for URLs:', urls);
-  
-  const response = await fetch('https://api.exa.ai/contents', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${exaApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      ids: urls,
-      text: {
-        maxCharacters: 3000,
-      },
-      highlights: {
-        numSentences: 5,
-      },
-    }),
-  });
+// ============= FIRECRAWL EXTRACTION =============
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Exa contents error:', response.status, errorText);
-    return [];
+async function firecrawlScrape(url: string, firecrawlApiKey: string): Promise<{ markdown: string; title: string } | null> {
+  console.log('Firecrawl scraping:', url);
+  
+  try {
+    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${firecrawlApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url,
+        formats: ['markdown'],
+        onlyMainContent: true,
+        waitFor: 2000,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Firecrawl error for', url, ':', response.status, errorText);
+      return null;
+    }
+
+    const data = await response.json();
+    const markdown = data.data?.markdown || data.markdown || '';
+    const title = data.data?.metadata?.title || data.metadata?.title || '';
+    
+    console.log(`Firecrawl result for ${url}: ${markdown.length} chars`);
+    
+    return { markdown, title };
+  } catch (e) {
+    console.error('Firecrawl fetch error for', url, ':', e);
+    return null;
   }
-
-  const data = await response.json();
-  console.log('Exa contents returned', data.results?.length || 0, 'results');
-  
-  return (data.results || []).map((r: any) => ({
-    url: r.url || '',
-    title: r.title || '',
-    snippet: r.highlights?.join(' ') || '',
-    text: r.text || '',
-  }));
 }
 
-async function performExaResearch(
+// ============= RESEARCH PIPELINE =============
+
+async function performResearch(
   recipientName: string,
   recipientCompany: string,
   reachingOutBecause: string,
-  exaApiKey: string
-): Promise<{ queries: string[]; results: ExaResult[]; selectedUrls: string[] }> {
+  exaApiKey: string,
+  firecrawlApiKey: string | undefined
+): Promise<{
+  queries: string[];
+  exaResults: ExaResult[];
+  selectedUrls: string[];
+  firecrawlContents: FirecrawlContent[];
+}> {
   const queries: string[] = [];
   let allResults: ExaResult[] = [];
   
-  // Query 1: Primary search for interviews, podcasts, talks, essays
-  const query1 = `${recipientName} ${recipientCompany} interview OR podcast OR talk OR keynote OR wrote OR essay OR blog OR "I think" OR "I believe"`;
+  // ============= STEP 1: Exa Discovery (search only) =============
+  console.log('=== STEP 1: Exa Discovery ===');
+  
+  // Primary query
+  const query1 = `${recipientName} ${recipientCompany} interview OR podcast OR talk OR keynote OR essay OR blog OR "I think" OR "I believe"`;
   queries.push(query1);
   
   const results1 = await exaSearch(query1, exaApiKey);
   allResults = [...results1];
   
-  // If results look generic (mostly LinkedIn or company pages), try query 2
-  const hasSpecificContent = results1.some(r => 
-    !r.url.includes('linkedin.com') && 
-    !r.url.includes('/about') &&
-    (r.url.includes('podcast') || r.url.includes('interview') || r.url.includes('blog'))
+  // Check if results look generic
+  const nonBlockedResults = results1.filter(r => !isBlockedUrl(r.url));
+  const hasSpecificContent = nonBlockedResults.some(r => 
+    HIGH_PRIORITY_PATTERNS.some(p => 
+      r.url.toLowerCase().includes(p) || r.title.toLowerCase().includes(p)
+    )
   );
   
-  if (!hasSpecificContent && results1.length < 4) {
-    const query2 = `${recipientName} ${recipientCompany} (podcast OR keynote OR interview OR "transcript" OR "Q&A")`;
+  // Fallback query if results look generic
+  if (!hasSpecificContent && nonBlockedResults.length < 3) {
+    console.log('Results look generic, trying fallback query...');
+    const query2 = `${recipientName} ${recipientCompany} (podcast OR keynote OR interview OR transcript OR Q&A)`;
     queries.push(query2);
     
     const results2 = await exaSearch(query2, exaApiKey);
@@ -499,60 +589,114 @@ async function performExaResearch(
     }
   }
   
-  // Take top 8 results
-  allResults = allResults.slice(0, 8);
+  // Filter out blocked URLs
+  const filteredResults = allResults.filter(r => !isBlockedUrl(r.url));
+  console.log(`Filtered ${allResults.length - filteredResults.length} blocked URLs, ${filteredResults.length} remaining`);
   
-  // Select top 3 URLs for content extraction (prioritize non-LinkedIn)
-  const sortedForSelection = [...allResults].sort((a, b) => {
-    const aScore = a.url.includes('linkedin.com') ? 0 : 1;
-    const bScore = b.url.includes('linkedin.com') ? 0 : 1;
-    return bScore - aScore;
-  });
+  // Score and sort remaining URLs
+  const scoredResults = filteredResults.map(r => ({
+    ...r,
+    score: scoreSourceUrl(r.url, r.title)
+  })).sort((a, b) => b.score - a.score);
   
-  const selectedUrls = sortedForSelection.slice(0, 3).map(r => r.url);
+  console.log('Scored results:', scoredResults.map(r => ({ url: r.url, score: r.score })));
   
-  // Get full content for selected URLs
-  if (selectedUrls.length > 0) {
-    const contentResults = await exaGetContents(selectedUrls, exaApiKey);
-    
-    // Merge content back into results
-    for (const content of contentResults) {
-      const idx = allResults.findIndex(r => r.url === content.url);
-      if (idx >= 0) {
-        allResults[idx].text = content.text;
-        allResults[idx].snippet = content.snippet || allResults[idx].snippet;
+  // Select top 3 for extraction
+  const selectedUrls = scoredResults.slice(0, 3).map(r => r.url);
+  console.log('Selected URLs for extraction:', selectedUrls);
+  
+  // ============= STEP 2: Firecrawl Extraction =============
+  console.log('=== STEP 2: Firecrawl Extraction ===');
+  
+  const firecrawlContents: FirecrawlContent[] = [];
+  
+  if (firecrawlApiKey && selectedUrls.length > 0) {
+    for (const url of selectedUrls) {
+      const result = await firecrawlScrape(url, firecrawlApiKey);
+      
+      if (result && result.markdown.length >= 500) {
+        firecrawlContents.push({
+          url,
+          title: result.title,
+          markdown: result.markdown.substring(0, 5000), // Cap at 5k chars
+          source: 'firecrawl',
+        });
+        console.log(`✓ Firecrawl success for ${url}: ${result.markdown.length} chars`);
+      } else if (result && result.markdown.length > 0 && result.markdown.length < 500) {
+        // Fallback to snippet if Firecrawl returns too little
+        console.log(`⚠ Firecrawl returned short content (${result.markdown.length} chars), using snippet fallback`);
+        const originalResult = scoredResults.find(r => r.url === url);
+        if (originalResult && originalResult.snippet.length > 100) {
+          firecrawlContents.push({
+            url,
+            title: originalResult.title,
+            markdown: originalResult.snippet,
+            source: 'snippet_fallback',
+          });
+        }
+      } else {
+        // No content, try snippet fallback
+        console.log(`✗ Firecrawl failed for ${url}, using snippet fallback`);
+        const originalResult = scoredResults.find(r => r.url === url);
+        if (originalResult && originalResult.snippet.length > 100) {
+          firecrawlContents.push({
+            url,
+            title: originalResult.title,
+            markdown: originalResult.snippet,
+            source: 'snippet_fallback',
+          });
+        }
+      }
+    }
+  } else if (!firecrawlApiKey) {
+    console.log('FIRECRAWL_API_KEY not configured, using snippets only');
+    // Fallback to snippets
+    for (const url of selectedUrls) {
+      const originalResult = scoredResults.find(r => r.url === url);
+      if (originalResult && originalResult.snippet.length > 50) {
+        firecrawlContents.push({
+          url,
+          title: originalResult.title,
+          markdown: originalResult.snippet,
+          source: 'snippet_fallback',
+        });
       }
     }
   }
   
-  return { queries, results: allResults, selectedUrls };
+  console.log(`Firecrawl extraction complete: ${firecrawlContents.length} sources with content`);
+  
+  return {
+    queries,
+    exaResults: allResults.slice(0, 8), // Keep top 8 for logging
+    selectedUrls,
+    firecrawlContents,
+  };
 }
+
+// ============= HOOK FACT EXTRACTION =============
 
 async function extractHookFacts(
   recipientName: string,
   recipientRole: string,
   recipientCompany: string,
-  exaResults: ExaResult[],
-  selectedUrls: string[],
+  firecrawlContents: FirecrawlContent[],
   reachingOutBecause: string,
   LOVABLE_API_KEY: string
 ): Promise<HookFact[]> {
-  if (exaResults.length === 0) {
-    console.log('No Exa results to extract facts from');
+  console.log('=== STEP 3: Hook Fact Extraction ===');
+  
+  if (firecrawlContents.length === 0) {
+    console.log('No content to extract facts from');
     return [];
   }
   
-  // Build context from selected sources
-  const selectedResults = exaResults.filter(r => selectedUrls.includes(r.url));
-  if (selectedResults.length === 0) {
-    console.log('No selected sources found');
-    return [];
-  }
-  
-  const sourcesContext = selectedResults.map((r, i) => `
-SOURCE ${i + 1}: ${r.url}
-Title: ${r.title}
-Content: ${r.text || r.snippet || '(no content available)'}
+  // Build context from Firecrawl content
+  const sourcesContext = firecrawlContents.map((content, i) => `
+SOURCE ${i + 1}: ${content.url}
+Title: ${content.title}
+Content (${content.source}):
+${content.markdown}
 `).join('\n---\n');
 
   const extractionPrompt = `You are analyzing public content about ${recipientName}, ${recipientRole} at ${recipientCompany}.
@@ -576,7 +720,7 @@ STRICT REQUIREMENTS for each fact:
 - hook_score: 1-5 (5 = highly specific and relevant)
 
 IMPORTANT:
-- If you cannot provide a SHORT evidence_quote (8-25 words) that actually appears in the source, DO NOT include the fact
+- If you cannot provide an evidence_quote (8-25 words) that actually appears in the source, DO NOT include the fact
 - Avoid generic facts like job titles or company founding dates
 - Return EMPTY array [] if no specific, supported facts can be found
 - Maximum 2 facts
@@ -609,6 +753,9 @@ Return ONLY valid JSON in this format:
     
     const facts: HookFact[] = (parsed.facts || []).slice(0, 2);
     console.log('Extracted hook facts:', facts.length);
+    if (parsed.notes) {
+      console.log('Extraction notes:', parsed.notes);
+    }
     return facts;
   } catch (e) {
     console.error('Failed to extract hook facts:', e);
@@ -690,6 +837,7 @@ serve(async (req) => {
 
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     const EXA_API_KEY = Deno.env.get('EXA_API_KEY');
+    const FIRECRAWL_API_KEY = Deno.env.get('FIRECRAWL_API_KEY');
     
     if (!LOVABLE_API_KEY) {
       console.error('LOVABLE_API_KEY is not configured');
@@ -699,50 +847,52 @@ serve(async (req) => {
       );
     }
 
-    // ============= STEP 1: Exa Research =============
+    // ============= RESEARCH PIPELINE =============
     let exaQueries: string[] = [];
     let exaResults: ExaResult[] = [];
     let selectedSources: string[] = [];
     let hookFacts: HookFact[] = [];
+    let firecrawlContents: FirecrawlContent[] = [];
     
     if (EXA_API_KEY) {
-      console.log('Step 1: Performing Exa research...');
+      console.log('Starting research pipeline...');
       
       try {
-        const exaData = await performExaResearch(
+        const researchData = await performResearch(
           recipientName,
           recipientCompany,
           reachingOutBecause,
-          EXA_API_KEY
+          EXA_API_KEY,
+          FIRECRAWL_API_KEY
         );
         
-        exaQueries = exaData.queries;
-        exaResults = exaData.results;
-        selectedSources = exaData.selectedUrls;
+        exaQueries = researchData.queries;
+        exaResults = researchData.exaResults;
+        selectedSources = researchData.selectedUrls;
+        firecrawlContents = researchData.firecrawlContents;
         
-        console.log(`Exa returned ${exaResults.length} results, selected ${selectedSources.length} for extraction`);
+        console.log(`Research complete: ${exaResults.length} Exa results, ${firecrawlContents.length} Firecrawl extractions`);
         
-        // Extract hook facts from the content
+        // Extract hook facts from Firecrawl content
         hookFacts = await extractHookFacts(
           recipientName,
           recipientRole,
           recipientCompany,
-          exaResults,
-          selectedSources,
+          firecrawlContents,
           reachingOutBecause,
           LOVABLE_API_KEY
         );
         
         console.log(`Extracted ${hookFacts.length} hook facts`);
       } catch (e) {
-        console.error('Exa research failed:', e);
+        console.error('Research pipeline failed:', e);
       }
     } else {
-      console.log('EXA_API_KEY not configured, skipping Exa research');
+      console.log('EXA_API_KEY not configured, skipping research');
     }
 
-    // ============= STEP 2: Generate Email =============
-    console.log('Step 2: Generating email...');
+    // ============= GENERATE EMAIL =============
+    console.log('=== STEP 4: Generate Email ===');
     
     // Build shared affiliation section if provided
     let sharedAffiliationSection = '';
@@ -897,6 +1047,7 @@ Only return the JSON, no other text.`;
     console.log(`exa_queries: ${exaQueries.length}`);
     console.log(`exa_results: ${exaResults.length}`);
     console.log(`selected_sources: ${selectedSources.length}`);
+    console.log(`firecrawl_contents: ${firecrawlContents.length}`);
     console.log(`hook_facts: ${hookFacts.length}`);
     console.log(`did_retry: ${enforcementResults.did_retry}`);
     console.log(`failures_first_pass: ${JSON.stringify(enforcementResults.failures_first_pass)}`);
