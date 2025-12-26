@@ -1918,15 +1918,16 @@ IMPORTANT: Only use this shared affiliation if no stronger craft/problem/constra
     // Build Hook Packs section with improved voice guidance
     let hookPacksSection = '';
     if (researchResult && researchResult.hookPacks.length > 0) {
-      // Sort by intent_fit and pick top 2-3 for cleaner context
+      // Sort by intent_fit and pick top 2 (primary + backup)
       const topHookPacks = [...researchResult.hookPacks]
         .sort((a, b) => b.scores.intent_fit - a.scores.intent_fit)
-        .slice(0, 3);
+        .slice(0, 2);
       
+      const labels = ['PRIMARY', 'BACKUP'];
       hookPacksSection = `
 RESEARCH FOUND (use to craft your "Like you," line):
 ${topHookPacks.map((hp, i) => `
-${i + 1}. SPECIFIC FACT: ${hp.hook_fact.claim}
+[${labels[i]}] SPECIFIC FACT: ${hp.hook_fact.claim}
    Evidence: "${hp.hook_fact.evidence}"
    Source: ${hp.hook_fact.source_url}
    
@@ -1942,7 +1943,8 @@ ${i + 1}. SPECIFIC FACT: ${hp.hook_fact.claim}
 `).join('')}
 
 INSTRUCTIONS:
-- Pick ONE hook pack (prefer highest intent fit)
+- Use the PRIMARY hook pack. It has the highest intent fit.
+- Only use BACKUP if the primary truly doesn't connect your story to theirs.
 - Rewrite the draft "Like you," line to sound natural—like you'd text it
 - Reference the specific fact somewhere in the email (show you did homework)
 - Don't use all ingredients if it sounds forced. Less is more.`;
