@@ -327,6 +327,19 @@ export default function TestHarness() {
                       <details className="group">
                         <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground flex items-center gap-2">
                           <span>Research Details</span>
+                          {/* Identity Anchor Status */}
+                          {result.response.debug?.identityAnchor && (
+                            <Badge 
+                              variant={result.response.debug.identityAnchor.confirmed ? 'default' : 'destructive'} 
+                              className="text-xs"
+                            >
+                              {result.response.debug.identityAnchor.confirmed ? (
+                                <><CheckCircle className="h-3 w-3 mr-1" /> Identity confirmed</>
+                              ) : (
+                                <><XCircle className="h-3 w-3 mr-1" /> Identity failed</>
+                              )}
+                            </Badge>
+                          )}
                           <Badge variant="outline" className="text-xs">
                             {result.response.hookFacts?.length || 0} hook facts
                           </Badge>
@@ -337,6 +350,46 @@ export default function TestHarness() {
                           )}
                         </summary>
                         <div className="mt-3 space-y-3">
+                          {/* Identity Anchor Details */}
+                          {result.response.debug?.identityAnchor && (
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+                                Identity Anchor {result.response.debug.identityAnchor.confirmed ? '✓' : '✗'}
+                              </p>
+                              <div className={`rounded-md p-2 text-xs space-y-1 ${result.response.debug.identityAnchor.confirmed ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
+                                {result.response.debug.identityAnchor.notes && (
+                                  <p className="text-muted-foreground italic">{result.response.debug.identityAnchor.notes}</p>
+                                )}
+                                {result.response.debug.identityAnchor.identityUrls && result.response.debug.identityAnchor.identityUrls.length > 0 && (
+                                  <div>
+                                    <span className="text-muted-foreground">Confirmed URLs: </span>
+                                    {result.response.debug.identityAnchor.identityUrls.map((url: string, i: number) => (
+                                      <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block text-primary hover:underline truncate">
+                                        {url}
+                                      </a>
+                                    ))}
+                                  </div>
+                                )}
+                                {result.response.debug.identityAnchor.identityScores && result.response.debug.identityAnchor.identityScores.length > 0 && (
+                                  <details className="mt-1">
+                                    <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Identity Scores ({result.response.debug.identityAnchor.identityScores.length})</summary>
+                                    <div className="mt-1 space-y-1 pl-2 border-l-2 border-muted">
+                                      {result.response.debug.identityAnchor.identityScores.slice(0, 5).map((s: any, i: number) => (
+                                        <div key={i} className="text-xs">
+                                          <span className={`font-mono ${s.isIdentityMatch ? 'text-green-600' : 'text-red-600'}`}>
+                                            [{s.score}] {s.isIdentityMatch ? '✓' : '✗'}
+                                          </span>
+                                          <span className="text-muted-foreground ml-1 truncate block">{s.url.substring(0, 60)}...</span>
+                                          <span className="text-muted-foreground/60 text-[10px]">{s.reasons.join(', ')}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </details>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          
                           {/* Exa Queries */}
                           {result.response.exaQueries && result.response.exaQueries.length > 0 && (
                             <div>

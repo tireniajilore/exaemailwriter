@@ -84,4 +84,20 @@ export interface ResearchedEmailResponse extends EmailResponse {
   wordCount?: number;
   clicheCount?: number;
   retryUsed?: boolean;
+  
+  // Debug (test harness only)
+  debug?: {
+    queryPlan?: any;
+    queriesUsed?: string[];
+    urlScores?: any[];
+    urlsFetched?: string[];
+    factRejectionReasons?: string[];
+    notes?: string;
+    identityAnchor?: {
+      confirmed: boolean;
+      identityUrls: string[];
+      identityScores: any[];
+      notes?: string;
+    };
+  };
 }

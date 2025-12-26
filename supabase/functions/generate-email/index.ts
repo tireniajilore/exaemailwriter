@@ -279,7 +279,7 @@ function determineIntentAngle(keywords: string[]): string {
   return 'shared domain problem';
 }
 
-// ============= QUERY PLAN BUILDER =============
+// ============= QUERY PLAN BUILDER (WITH DISAMBIGUATION) =============
 
 function buildExaQueryPlan(input: {
   recipientName: string;
@@ -308,35 +308,27 @@ function buildExaQueryPlan(input: {
   const kw2 = intentKeywords[1] || '';
   const kwPhrase = intentKeywords.find(k => k.includes(' ')) || '';
   
-  // Tier A: Long-form / opinion / interview content
+  // CRITICAL: All niche queries now include company for disambiguation
+  // Tier A: Long-form / opinion / interview content (with company)
   if (kw1) {
-    queries.push(`"${recipientName}" interview ${kw1}${kw2 ? ' ' + kw2 : ''}`);
+    queries.push(`"${recipientName}" ${recipientCompany} interview ${kw1}${kw2 ? ' ' + kw2 : ''}`);
   }
   if (kw1) {
-    queries.push(`"${recipientName}" podcast ${kw1}`);
+    queries.push(`"${recipientName}" ${recipientCompany} podcast ${kw1}`);
   }
   if (kw1) {
-    queries.push(`"${recipientName}" talk OR keynote ${kw1}`);
+    queries.push(`"${recipientName}" ${recipientCompany} talk OR keynote ${kw1}`);
   }
   if (kw1) {
-    queries.push(`"${recipientName}" wrote OR essay ${kw1}`);
+    queries.push(`"${recipientName}" ${recipientCompany} wrote OR essay ${kw1}`);
   }
   if (kwPhrase) {
-    queries.push(`"${recipientName}" "${kwPhrase}"`);
+    queries.push(`"${recipientName}" ${recipientCompany} "${kwPhrase}"`);
   }
   
-  // Tier B: Initiative / project angle
+  // Tier B: Initiative / project angle (with company)
   if (kw1) {
-    queries.push(`"${recipientName}" ${kw1} initiative OR program`);
-  }
-  if (kw1) {
-    queries.push(`"${recipientCompany}" ${kw1} ${recipientName}`);
-  }
-  
-  // Tier C: Fallback identity (only if we don't have enough keywords)
-  if (intentKeywords.length < 3) {
-    queries.push(`"${recipientName}" "${recipientCompany}" ${recipientRole}`);
-    queries.push(`"${recipientName}" "${recipientCompany}"`);
+    queries.push(`"${recipientName}" ${recipientCompany} ${kw1} initiative OR program`);
   }
   
   // Dedupe and limit to 6 queries
@@ -347,6 +339,82 @@ function buildExaQueryPlan(input: {
     intent_keywords: intentKeywords,
     intent_angle: intentAngle,
   };
+}
+
+// ============= IDENTITY ANCHOR QUERIES =============
+
+function buildIdentityQueries(recipientName: string, recipientCompany: string, recipientRole: string): string[] {
+  // These queries are meant to be CORRECT, not niche
+  // They establish who the person is before we search for niche content
+  return [
+    `"${recipientName}" ${recipientCompany} ${recipientRole}`,
+    `"${recipientName}" ${recipientCompany} executive biography`,
+  ];
+}
+
+// ============= IDENTITY VALIDATION =============
+
+interface IdentityScoreResult {
+  score: number;
+  reasons: string[];
+  isIdentityMatch: boolean;
+}
+
+function scoreIdentityMatch(
+  url: string, 
+  title: string, 
+  text: string, 
+  recipientCompany: string, 
+  recipientRole: string
+): IdentityScoreResult {
+  const lowerTitle = title.toLowerCase();
+  const lowerText = text.toLowerCase();
+  const lowerCompany = recipientCompany.toLowerCase();
+  const combinedContent = `${lowerTitle} ${lowerText}`;
+  
+  let score = 0;
+  const reasons: string[] = [];
+  
+  // Positive: Company name match
+  if (combinedContent.includes(lowerCompany)) {
+    score += 3;
+    reasons.push(`+3: company match "${recipientCompany}"`);
+  }
+  
+  // Positive: Role keywords match
+  const roleKeywords = recipientRole.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  for (const keyword of roleKeywords) {
+    if (keyword.length > 3 && combinedContent.includes(keyword)) {
+      score += 2;
+      reasons.push(`+2: role keyword "${keyword}"`);
+      break; // Only count once
+    }
+  }
+  
+  // Negative: Wrong-domain keywords (common disambiguation conflicts)
+  const wrongDomainPatterns = [
+    // Music/entertainment (Chris Young the singer)
+    { patterns: ['country music', 'country singer', 'tour', 'album', 'song', 'lyrics', 'nashville', 'grammy nomination', 'concert'], penalty: -5, desc: 'music industry' },
+    // Sports (common name conflicts)
+    { patterns: ['nfl', 'nba', 'mlb', 'quarterback', 'pitcher', 'drafted', 'touchdown', 'home run'], penalty: -5, desc: 'sports' },
+    // Other entertainment
+    { patterns: ['actor', 'actress', 'movie star', 'hollywood', 'tv show', 'reality tv'], penalty: -4, desc: 'entertainment' },
+  ];
+  
+  for (const { patterns, penalty, desc } of wrongDomainPatterns) {
+    for (const pattern of patterns) {
+      if (combinedContent.includes(pattern) && !combinedContent.includes(lowerCompany)) {
+        score += penalty;
+        reasons.push(`${penalty}: wrong domain "${desc}" (found "${pattern}")`);
+        break;
+      }
+    }
+  }
+  
+  // Threshold: score >= 4 means confident identity match
+  const isIdentityMatch = score >= 4;
+  
+  return { score, reasons, isIdentityMatch };
 }
 
 // ============= URL SCORING (NICHE-ENOUGH) =============
@@ -724,7 +792,14 @@ async function exaSearchWithContent(query: string, exaApiKey: string, numResults
   }));
 }
 
-// ============= RESEARCH PIPELINE (EXA ONLY) =============
+// ============= RESEARCH PIPELINE (EXA ONLY WITH IDENTITY ANCHOR) =============
+
+interface IdentityAnchorResult {
+  confirmed: boolean;
+  identityUrls: string[];
+  identityScores: { url: string; title: string; score: number; reasons: string[]; isIdentityMatch: boolean }[];
+  notes?: string;
+}
 
 async function performResearch(
   recipientName: string,
@@ -740,10 +815,102 @@ async function performResearch(
   exaResults: ExaResult[];
   selectedResults: ExaResult[];
   debug: ResearchDebug;
+  identityAnchor: IdentityAnchorResult;
 }> {
-  console.log('=== STEP 1: Build Query Plan ===');
   
-  // Build query plan based on sender intent
+  // ============= STEP 0: Identity Anchor (ALWAYS RUN FIRST) =============
+  console.log('=== STEP 0: Identity Anchor ===');
+  
+  const identityQueries = buildIdentityQueries(recipientName, recipientCompany, recipientRole);
+  console.log('Identity queries:', identityQueries);
+  
+  const identityScores: { url: string; title: string; score: number; reasons: string[]; isIdentityMatch: boolean }[] = [];
+  let identityResults: ExaResult[] = [];
+  const identityQueriesUsed: string[] = [];
+  
+  // Run identity queries (max 2)
+  for (const query of identityQueries.slice(0, 2)) {
+    identityQueriesUsed.push(query);
+    const results = await exaSearchWithContent(query, exaApiKey, 5); // Only top 5 for identity
+    
+    for (const r of results) {
+      if (!identityResults.find(existing => existing.url === r.url)) {
+        identityResults.push(r);
+        
+        // Score for identity match (not niche-ness)
+        const identityScore = scoreIdentityMatch(
+          r.url, 
+          r.title, 
+          r.text || r.snippet || '', 
+          recipientCompany, 
+          recipientRole
+        );
+        identityScores.push({
+          url: r.url,
+          title: r.title,
+          score: identityScore.score,
+          reasons: identityScore.reasons,
+          isIdentityMatch: identityScore.isIdentityMatch,
+        });
+      }
+    }
+  }
+  
+  // Sort by identity score
+  identityScores.sort((a, b) => b.score - a.score);
+  console.log('Identity scores:', identityScores.map(s => ({ 
+    url: s.url.substring(0, 50), 
+    score: s.score, 
+    match: s.isIdentityMatch 
+  })));
+  
+  // Check if we have confident identity match (score >= 4)
+  const confirmedIdentityUrls = identityScores
+    .filter(s => s.isIdentityMatch)
+    .map(s => s.url);
+  
+  const identityAnchor: IdentityAnchorResult = {
+    confirmed: confirmedIdentityUrls.length > 0,
+    identityUrls: confirmedIdentityUrls.slice(0, 2),
+    identityScores,
+    notes: confirmedIdentityUrls.length === 0 
+      ? 'Could not confidently disambiguate recipient identity; name may be ambiguous.' 
+      : undefined,
+  };
+  
+  console.log('Identity anchor confirmed:', identityAnchor.confirmed);
+  
+  // If no identity match, return early with empty results
+  if (!identityAnchor.confirmed) {
+    console.log('STOPPING: No confident identity match found');
+    
+    const emptyQueryPlan: QueryPlan = {
+      queries: [],
+      intent_keywords: [],
+      intent_angle: 'identity disambiguation failed',
+    };
+    
+    const debug: ResearchDebug = {
+      queryPlan: emptyQueryPlan,
+      queriesUsed: identityQueriesUsed,
+      urlScores: [],
+      urlsFetched: [],
+      notes: 'Research stopped: could not confirm recipient identity. Name may be ambiguous.',
+    };
+    
+    return {
+      queryPlan: emptyQueryPlan,
+      queriesUsed: identityQueriesUsed,
+      exaResults: identityResults,
+      selectedResults: [],
+      debug,
+      identityAnchor,
+    };
+  }
+  
+  // ============= STEP 1: Build Niche Query Plan =============
+  console.log('=== STEP 1: Build Niche Query Plan ===');
+  
   const queryPlan = buildExaQueryPlan({
     recipientName,
     recipientCompany,
@@ -753,14 +920,14 @@ async function performResearch(
     askType,
   });
   
-  console.log('Query plan:', queryPlan);
+  console.log('Niche query plan:', queryPlan);
   
-  const queriesUsed: string[] = [];
-  let allResults: ExaResult[] = [];
+  const queriesUsed: string[] = [...identityQueriesUsed];
+  let allResults: ExaResult[] = [...identityResults];
   const urlScores: { url: string; title: string; score: number; reasons: string[] }[] = [];
   
-  // ============= STEP 2: Exa Search with Early Stopping =============
-  console.log('=== STEP 2: Exa Search ===');
+  // ============= STEP 2: Exa Niche Search with Early Stopping =============
+  console.log('=== STEP 2: Niche Exa Search ===');
   
   const MAX_QUERIES = 3;
   const MIN_NICHE_RESULTS = 2;
@@ -771,28 +938,49 @@ async function performResearch(
     
     const results = await exaSearchWithContent(query, exaApiKey);
     
-    // Dedupe by URL
+    // Dedupe by URL and FILTER by identity match
     for (const r of results) {
       if (!allResults.find(existing => existing.url === r.url)) {
         allResults.push(r);
         
-        // Score each URL
-        const scoreResult = scoreUrl(r.url, r.title);
+        // First check identity match (must pass)
+        const identityScore = scoreIdentityMatch(
+          r.url, 
+          r.title, 
+          r.text || r.snippet || '', 
+          recipientCompany, 
+          recipientRole
+        );
+        
+        // If wrong person, skip entirely
+        if (identityScore.score < 0) {
+          console.log(`Skipping ${r.url.substring(0, 50)} - identity score ${identityScore.score} (wrong person)`);
+          continue;
+        }
+        
+        // Then score for niche-ness
+        const nicheScore = scoreUrl(r.url, r.title);
+        
+        // Combined score: identity match is prerequisite, then niche score
+        const combinedScore = identityScore.isIdentityMatch 
+          ? nicheScore.score + 2 // Bonus for confirmed identity
+          : nicheScore.score - 2; // Penalty if not confirmed
+        
         urlScores.push({
           url: r.url,
           title: r.title,
-          score: scoreResult.score,
-          reasons: scoreResult.reasons,
+          score: combinedScore,
+          reasons: [...identityScore.reasons, ...nicheScore.reasons],
         });
       }
     }
     
-    // Check if we have enough niche results
-    const nicheResults = allResults.filter(r => isNicheEnoughResult(r.url, r.title, r.snippet || r.text || ''));
-    console.log(`After query ${i + 1}: ${allResults.length} total, ${nicheResults.length} niche-enough`);
+    // Check if we have enough niche results with identity match
+    const nicheWithIdentity = urlScores.filter(s => s.score >= 3);
+    console.log(`After query ${i + 1}: ${allResults.length} total, ${nicheWithIdentity.length} niche+identity`);
     
-    if (nicheResults.length >= MIN_NICHE_RESULTS) {
-      console.log('Early stopping: enough niche results found');
+    if (nicheWithIdentity.length >= MIN_NICHE_RESULTS) {
+      console.log('Early stopping: enough niche+identity results found');
       break;
     }
   }
@@ -800,29 +988,19 @@ async function performResearch(
   // ============= STEP 3: Score and Select Top Results =============
   console.log('=== STEP 3: Score and Select ===');
   
-  // Sort by score
+  // Sort by combined score
   urlScores.sort((a, b) => b.score - a.score);
-  console.log('URL scores:', urlScores.map(s => ({ url: s.url.substring(0, 60), score: s.score })));
+  console.log('URL scores (identity+niche):', urlScores.map(s => ({ url: s.url.substring(0, 60), score: s.score })));
   
-  // Select top 2-4 results that are niche-enough
+  // Select top 2-4 results that pass both identity and niche checks
   const selectedResults: ExaResult[] = [];
   const urlsFetched: string[] = [];
   
   for (const scored of urlScores) {
     if (selectedResults.length >= 4) break;
     
-    const result = allResults.find(r => r.url === scored.url);
-    if (result && isNicheEnoughResult(result.url, result.title, result.snippet || result.text || '')) {
-      selectedResults.push(result);
-      urlsFetched.push(result.url);
-    }
-  }
-  
-  // If we don't have enough niche results, add top-scored anyway (as fallback)
-  if (selectedResults.length < 2) {
-    for (const scored of urlScores) {
-      if (selectedResults.length >= 2) break;
-      
+    // Only include if combined score is positive (identity confirmed + some niche value)
+    if (scored.score >= 1) {
       const result = allResults.find(r => r.url === scored.url);
       if (result && !selectedResults.includes(result)) {
         selectedResults.push(result);
@@ -846,6 +1024,7 @@ async function performResearch(
     exaResults: allResults.slice(0, 8),
     selectedResults,
     debug,
+    identityAnchor,
   };
 }
 
@@ -1038,9 +1217,10 @@ serve(async (req) => {
     let hookFacts: HookFact[] = [];
     let researchDebug: ResearchDebug | null = null;
     let intentKeywords: string[] = [];
+    let identityAnchorResult: IdentityAnchorResult | null = null;
     
     if (EXA_API_KEY) {
-      console.log('Starting research pipeline (Exa only)...');
+      console.log('Starting research pipeline (Exa only with identity anchor)...');
       
       try {
         const researchData = await performResearch(
@@ -1058,26 +1238,34 @@ serve(async (req) => {
         selectedSources = researchData.selectedResults.map(r => r.url);
         intentKeywords = researchData.queryPlan.intent_keywords;
         researchDebug = researchData.debug;
+        identityAnchorResult = researchData.identityAnchor;
         
-        console.log(`Research complete: ${exaResults.length} Exa results, ${researchData.selectedResults.length} selected`);
+        console.log(`Research complete: identity confirmed=${identityAnchorResult.confirmed}, ${exaResults.length} Exa results, ${researchData.selectedResults.length} selected`);
         
-        // Extract hook facts from selected results
-        const extraction = await extractHookFacts(
-          recipientName,
-          recipientRole,
-          recipientCompany,
-          researchData.selectedResults,
-          reachingOutBecause,
-          intentKeywords,
-          LOVABLE_API_KEY
-        );
-        
-        hookFacts = extraction.facts;
-        if (researchDebug) {
-          researchDebug.factRejectionReasons = extraction.rejectionReasons;
+        // Only extract hook facts if identity was confirmed
+        if (identityAnchorResult.confirmed && researchData.selectedResults.length > 0) {
+          const extraction = await extractHookFacts(
+            recipientName,
+            recipientRole,
+            recipientCompany,
+            researchData.selectedResults,
+            reachingOutBecause,
+            intentKeywords,
+            LOVABLE_API_KEY
+          );
+          
+          hookFacts = extraction.facts;
+          if (researchDebug) {
+            researchDebug.factRejectionReasons = extraction.rejectionReasons;
+          }
+          
+          console.log(`Extracted ${hookFacts.length} niche hook facts`);
+        } else if (!identityAnchorResult.confirmed) {
+          console.log('Skipping hook fact extraction: identity not confirmed');
+          if (researchDebug) {
+            researchDebug.notes = 'Hook fact extraction skipped: could not confirm recipient identity.';
+          }
         }
-        
-        console.log(`Extracted ${hookFacts.length} niche hook facts`);
       } catch (e) {
         console.error('Research pipeline failed:', e);
         if (researchDebug) {
@@ -1320,8 +1508,11 @@ Only return the JSON, no other text.`;
     };
 
     // Include debug data for test harness
-    if (includeDebug && researchDebug) {
-      responseData.debug = researchDebug;
+    if (includeDebug) {
+      responseData.debug = {
+        ...researchDebug,
+        identityAnchor: identityAnchorResult,
+      };
     }
 
     return new Response(
