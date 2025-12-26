@@ -92,11 +92,14 @@ interface ValidationResult {
   clicheCount: number;
 }
 
+type EvidenceType = 'quote' | 'named_initiative' | 'described_decision' | 'named_artifact';
+
 interface HookPack {
   hook_fact: {
     claim: string;
     source_url: string;
     evidence: string;
+    evidence_type?: EvidenceType;
   };
   bridge: {
     like_you_line: string;
@@ -575,16 +578,48 @@ SOURCES TO ANALYZE:
 ${sourcesContext}
 
 For each source, try to extract a Hook Pack. A Hook Pack contains:
-1. A non-obvious CLAIM about the recipient (not just job title or generic bio)
+1. A POINTABLE CLAIM - a fact that can be quoted, named, or directly referenced
 2. A concrete "Like you," bridge line that connects sender to this claim
 3. Scores for quality
 
-HOOK PACK REQUIREMENTS:
-- The claim must be something you couldn't know from their LinkedIn alone
-- The "Like you," line must reference a shared tension/value/domain in concrete terms
-- The evidence must be a direct quote from the source (8-25 words)
+═══════════════════════════════════════════════════════════════════
+CRITICAL: EVIDENCE MUST BE POINTABLE
+═══════════════════════════════════════════════════════════════════
 
-INVALID "Like you," lines (DO NOT generate these):
+A claim is ONLY valid if it includes at least one of:
+✓ DIRECT QUOTE - Exact words the recipient said (in quotes)
+✓ NAMED INITIATIVE/PROGRAM - A specific named project, product, or program they created/led
+✓ DESCRIBED DECISION/TRADEOFF - A specific choice they made with concrete context
+✓ NAMED ARTIFACT - A specific article, podcast, talk, paper, or interview by name/title
+
+AUTOMATICALLY REJECT claims that are merely:
+✗ "interest in..." / "interested in..."
+✗ "focus on..." / "focused on..."
+✗ "known for..."
+✗ "has been involved in..."
+✗ "passionate about..."
+✗ "believes in..."
+✗ "works on..."
+✗ "is leading..."
+✗ Any vague attribution without a specific named thing or direct quote
+
+EXAMPLES:
+
+INVALID (reject these):
+- "Chris has a focus on AI and future of work" → No named artifact or quote
+- "She's known for her work in sustainability" → No specific evidence
+- "He's been involved in major acquisitions" → Which ones?
+- "She's interested in inclusive design" → Vague sentiment
+
+VALID (accept these):
+- "In his EY podcast 'The Empathy Effect', Chris said: 'AI will fundamentally change how we think about empathy in the workplace'" → Named artifact + quote
+- "She led the acquisition of Mandiant in 2022, Microsoft's largest cybersecurity deal" → Named initiative with specifics
+- "He chose to sunset the legacy product despite $50M in revenue, prioritizing long-term platform health" → Described decision with context
+- "In her TED talk 'Designing for the Margins', she argued that inclusive design drives innovation" → Named artifact + paraphrase
+
+═══════════════════════════════════════════════════════════════════
+
+INVALID "Like you," lines (DO NOT generate):
 - "Like you, I went to Stanford" (just identity mirroring)
 - "Like you, I'm passionate about X" (too generic)
 - "Like you, I work in tech" (too broad)
@@ -601,7 +636,8 @@ Return JSON:
       "hook_fact": {
         "claim": "Non-obvious claim about recipient",
         "source_url": "https://...",
-        "evidence": "8-25 word quote from source"
+        "evidence": "8-25 word quote OR named artifact/initiative/decision from source",
+        "evidence_type": "quote|named_initiative|described_decision|named_artifact"
       },
       "bridge": {
         "like_you_line": "Like you, I...",
@@ -626,7 +662,9 @@ SCORING RUBRIC:
 
 Only include Hook Packs with overall score >= 0.5
 Return maximum 2 Hook Packs, prioritize quality over quantity.
-If no good Hook Packs can be extracted, return empty array.
+
+IF NO CLAIMS MEET THE "POINTABLE" REQUIREMENT, RETURN AN EMPTY ARRAY.
+Better to return 0 Hook Packs than to return vague, unprovable claims.
 
 Return ONLY valid JSON.`;
 
