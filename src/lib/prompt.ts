@@ -50,14 +50,19 @@ export interface HookPack {
     evidence: string;
   };
   bridge: {
-    like_you_line: string;
     bridge_angle: BridgeAngle;
     why_relevant: string;
+    like_you_ingredients: {
+      shared_action: string;
+      shared_axis: string;
+      shared_stakes: string;
+    };
   };
   scores: {
     identity_conf: number;
     non_generic: number;
     bridgeability: number;
+    intent_fit: number;
     overall: number;
   };
 }
