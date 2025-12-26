@@ -5,7 +5,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Sparkles } from 'lucide-react';
 import type { AskType, EmailRequest, SharedAffiliationType } from '@/lib/prompt';
 
 interface ResearchEmailFormProps {
@@ -35,7 +35,6 @@ export function ResearchEmailForm({ onSubmit, isLoading }: ResearchEmailFormProp
   const [recipientName, setRecipientName] = useState('');
   const [recipientCompany, setRecipientCompany] = useState('');
   const [recipientRole, setRecipientRole] = useState('');
-  const [recipientLink, setRecipientLink] = useState('');
   const [askType, setAskType] = useState<AskType>('chat');
   const [reachingOutBecause, setReachingOutBecause] = useState('');
   const [credibilityStory, setCredibilityStory] = useState('');
@@ -72,7 +71,6 @@ export function ResearchEmailForm({ onSubmit, isLoading }: ResearchEmailFormProp
       recipientName,
       recipientCompany,
       recipientRole,
-      recipientLink,
       askType,
       reachingOutBecause,
       credibilityStory,
@@ -94,7 +92,6 @@ export function ResearchEmailForm({ onSubmit, isLoading }: ResearchEmailFormProp
     recipientName.trim() &&
     recipientCompany.trim() &&
     recipientRole.trim() &&
-    recipientLink.trim() &&
     reachingOutBecause.trim() &&
     credibilityStory.trim() &&
     // If affiliation types selected, name is required
@@ -107,9 +104,6 @@ export function ResearchEmailForm({ onSubmit, isLoading }: ResearchEmailFormProp
         <h3 className="font-serif text-lg font-medium border-b border-border pb-2">
           Who are you emailing?
         </h3>
-        <p className="text-sm text-muted-foreground">
-          This helps the AI find the right person. Please use public links only.
-        </p>
         
         <div className="space-y-2">
           <Label htmlFor="recipientName" className="text-sm font-medium">
@@ -155,24 +149,6 @@ export function ResearchEmailForm({ onSubmit, isLoading }: ResearchEmailFormProp
               maxLength={100}
             />
           </div>
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="recipientLink" className="text-sm font-medium">
-            One public link about them <span className="text-destructive">*</span>
-          </Label>
-          <Input
-            id="recipientLink"
-            type="url"
-            placeholder="https://linkedin.com/in/janesmith or company bio page"
-            value={recipientLink}
-            onChange={(e) => setRecipientLink(e.target.value)}
-            className="bg-background border-border"
-            required
-          />
-          <p className="text-xs text-muted-foreground">
-            LinkedIn profile, company bio page, or personal website
-          </p>
         </div>
       </section>
 
@@ -319,8 +295,9 @@ export function ResearchEmailForm({ onSubmit, isLoading }: ResearchEmailFormProp
       </section>
 
       {/* Info banner */}
-      <div className="bg-muted/50 border border-border p-4 text-sm text-muted-foreground">
-        We'll use your inputs and public information from the link you provided to draft a personalized cold email.
+      <div className="bg-muted/50 border border-border p-4 text-sm text-muted-foreground flex items-start gap-3">
+        <Sparkles className="h-4 w-4 mt-0.5 shrink-0" />
+        <span>We'll automatically research public information about the recipient to personalize your email.</span>
       </div>
 
       <Button

@@ -20,7 +20,6 @@ export interface EmailRequest {
   recipientName: string;
   recipientCompany: string;
   recipientRole: string;
-  recipientLink: string;
   
   // Purpose
   askType: AskType;

@@ -544,6 +544,7 @@ async function firecrawlScrape(url: string, firecrawlApiKey: string): Promise<{ 
 async function performResearch(
   recipientName: string,
   recipientCompany: string,
+  recipientRole: string,
   reachingOutBecause: string,
   exaApiKey: string,
   firecrawlApiKey: string | undefined
@@ -559,14 +560,14 @@ async function performResearch(
   // ============= STEP 1: Exa Discovery (search only) =============
   console.log('=== STEP 1: Exa Discovery ===');
   
-  // Primary query
-  const query1 = `${recipientName} ${recipientCompany} interview OR podcast OR talk OR keynote OR essay OR blog OR "I think" OR "I believe"`;
+  // Primary query with quoted name and company for precision
+  const query1 = `"${recipientName}" "${recipientCompany}" interview OR podcast OR talk OR keynote OR essay OR blog OR wrote OR "I think" OR "I believe"`;
   queries.push(query1);
   
   const results1 = await exaSearch(query1, exaApiKey);
   allResults = [...results1];
   
-  // Check if results look generic
+  // Check if results look generic or mixed
   const nonBlockedResults = results1.filter(r => !isBlockedUrl(r.url));
   const hasSpecificContent = nonBlockedResults.some(r => 
     HIGH_PRIORITY_PATTERNS.some(p => 
@@ -574,10 +575,10 @@ async function performResearch(
     )
   );
   
-  // Fallback query if results look generic
+  // Disambiguation fallback if results look mixed or generic
   if (!hasSpecificContent && nonBlockedResults.length < 3) {
-    console.log('Results look generic, trying fallback query...');
-    const query2 = `${recipientName} ${recipientCompany} (podcast OR keynote OR interview OR transcript OR Q&A)`;
+    console.log('Results look generic or mixed, trying disambiguation fallback...');
+    const query2 = `"${recipientName}" "${recipientCompany}" "${recipientRole}"`;
     queries.push(query2);
     
     const results2 = await exaSearch(query2, exaApiKey);
@@ -776,7 +777,6 @@ serve(async (req) => {
     const recipientName = body.recipientName || '';
     const recipientCompany = body.recipientCompany || '';
     const recipientRole = body.recipientRole || '';
-    const recipientLink = body.recipientLink || '';
     const askType = body.askType || 'chat';
     const reachingOutBecause = body.reachingOutBecause || '';
     const credibilityStory = body.credibilityStory || '';
@@ -801,9 +801,9 @@ serve(async (req) => {
       );
     }
 
-    if (!recipientLink || !recipientLink.startsWith('http')) {
+    if (!recipientRole || recipientRole.length < 1 || recipientRole.length > 100) {
       return new Response(
-        JSON.stringify({ error: 'Please provide a valid public URL' }),
+        JSON.stringify({ error: 'Invalid role/title' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -828,7 +828,6 @@ serve(async (req) => {
       recipientName,
       recipientCompany,
       recipientRole,
-      recipientLink,
       askType,
       reachingOutBecause,
       credibilityStory,
@@ -861,6 +860,7 @@ serve(async (req) => {
         const researchData = await performResearch(
           recipientName,
           recipientCompany,
+          recipientRole,
           reachingOutBecause,
           EXA_API_KEY,
           FIRECRAWL_API_KEY

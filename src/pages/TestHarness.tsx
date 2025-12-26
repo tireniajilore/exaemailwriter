@@ -87,7 +87,6 @@ export default function TestHarness() {
             recipientName: testCase.recipientName,
             recipientRole: testCase.recipientRole,
             recipientCompany: testCase.recipientCompany,
-            recipientLink: testCase.recipientLink,
             askType: testCase.askType,
             reachingOutBecause: testCase.reachingOutBecause,
             credibilityStory: testCase.credibilityStory,
@@ -462,7 +461,7 @@ export default function TestHarness() {
                     View Input Details
                   </summary>
                   <div className="px-4 py-3 text-xs space-y-2 bg-muted/20">
-                    <p><strong>Public Link:</strong> <a href={result.testCase.recipientLink} target="_blank" rel="noopener noreferrer" className="text-primary underline">{result.testCase.recipientLink}</a></p>
+                    <p><strong>Recipient:</strong> {result.testCase.recipientName}, {result.testCase.recipientRole} at {result.testCase.recipientCompany}</p>
                     <p><strong>Ask Type:</strong> {getAskTypeLabel(result.testCase.askType)}</p>
                     <p><strong>Reaching Out Because:</strong> {result.testCase.reachingOutBecause}</p>
                     <p><strong>Credibility Story:</strong> {result.testCase.credibilityStory}</p>
