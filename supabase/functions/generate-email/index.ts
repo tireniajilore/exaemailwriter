@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PROMPT_VERSION = 'v5.0-firecrawl';
+const PROMPT_VERSION = 'v6.0-exa-only';
 const MODEL_NAME = 'google/gemini-2.5-flash';
 const RESEARCH_MODEL_NAME = 'google/gemini-2.5-flash';
 
@@ -127,13 +127,8 @@ interface ExaResult {
   url: string;
   title: string;
   snippet: string;
-}
-
-interface FirecrawlContent {
-  url: string;
-  title: string;
-  markdown: string;
-  source: 'firecrawl' | 'snippet_fallback';
+  text?: string;
+  score?: number;
 }
 
 interface EnforcementResults {
@@ -141,6 +136,317 @@ interface EnforcementResults {
   failures_first_pass: string[];
   failures_retry: string[];
 }
+
+// ============= QUERY PLAN TYPES =============
+type AskType = "chat" | "feedback" | "referral" | "job" | "other";
+
+interface QueryPlan {
+  queries: string[];
+  intent_keywords: string[];
+  intent_angle: string;
+}
+
+interface ResearchDebug {
+  queryPlan: QueryPlan;
+  queriesUsed: string[];
+  urlScores: { url: string; title: string; score: number; reasons: string[] }[];
+  urlsFetched: string[];
+  factRejectionReasons?: string[];
+  notes?: string;
+}
+
+// ============= KEYWORD EXTRACTION =============
+
+const STOPWORDS = new Set([
+  'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she', 'it', 'they', 'them',
+  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'then', 'so', 'as', 'at', 'by',
+  'for', 'in', 'of', 'on', 'to', 'with', 'from', 'up', 'down', 'is', 'are',
+  'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does',
+  'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+  'this', 'that', 'these', 'those', 'what', 'which', 'who', 'how', 'when',
+  'where', 'why', 'all', 'each', 'every', 'both', 'few', 'more', 'most',
+  'other', 'some', 'such', 'no', 'not', 'only', 'same', 'than', 'too', 'very',
+  'just', 'also', 'now', 'here', 'there', 'about', 'into', 'over', 'after',
+  'before', 'between', 'under', 'again', 'further', 'once', 'during', 'out',
+  'through', 'because', 'while', 'although', 'though', 'since', 'until',
+  'unless', 'however', 'therefore', 'thus', 'hence', 'etc', 'like', 'want',
+  'need', 'get', 'got', 'getting', 'make', 'made', 'making', 'take', 'took',
+  'taking', 'know', 'knew', 'knowing', 'think', 'thought', 'thinking', 'see',
+  'saw', 'seeing', 'come', 'came', 'coming', 'go', 'went', 'going', 'look',
+  'looking', 'use', 'using', 'find', 'finding', 'give', 'giving', 'tell',
+  'telling', 'ask', 'asking', 'work', 'working', 'seem', 'seeming', 'feel',
+  'feeling', 'try', 'trying', 'leave', 'leaving', 'call', 'calling', 'keep',
+  'keeping', 'let', 'letting', 'begin', 'beginning', 'show', 'showing',
+  'hear', 'hearing', 'play', 'playing', 'run', 'running', 'move', 'moving',
+  'live', 'living', 'believe', 'believing', 'bring', 'bringing', 'happen',
+  'write', 'writing', 'provide', 'sit', 'stand', 'lose', 'pay', 'meet',
+  'include', 'continue', 'set', 'learn', 'change', 'lead', 'understand',
+  'watch', 'follow', 'stop', 'create', 'speak', 'read', 'allow', 'add',
+  'spend', 'grow', 'open', 'walk', 'win', 'offer', 'remember', 'love',
+  'consider', 'appear', 'buy', 'wait', 'serve', 'die', 'send', 'expect',
+  'build', 'stay', 'fall', 'cut', 'reach', 'kill', 'remain', 'suggest',
+  'raise', 'pass', 'sell', 'require', 'report', 'decide', 'pull'
+]);
+
+const GENERIC_WORDS = new Set([
+  'help', 'advice', 'connect', 'career', 'journey', 'growth', 'success',
+  'opportunity', 'excited', 'interested', 'learn', 'explore', 'discuss',
+  'chat', 'talk', 'meeting', 'call', 'share', 'insights', 'thoughts',
+  'perspective', 'experience', 'background', 'story', 'path', 'role',
+  'position', 'company', 'team', 'organization', 'industry', 'space',
+  'field', 'area', 'sector', 'market', 'world', 'way', 'things', 'stuff',
+  'people', 'person', 'someone', 'anyone', 'everyone', 'years', 'time',
+  'today', 'tomorrow', 'week', 'month', 'year', 'future', 'past', 'current',
+  'new', 'old', 'great', 'good', 'best', 'better', 'big', 'small', 'first',
+  'last', 'next', 'different', 'important', 'able', 'right', 'high', 'long',
+  'little', 'own', 'young', 'sure', 'real', 'possible', 'possible', 'public',
+  'early', 'late', 'hard', 'major', 'general', 'local', 'certain', 'clear'
+]);
+
+function extractKeywords(text: string): string[] {
+  // Tokenize: split on whitespace and punctuation, lowercase
+  const tokens = text.toLowerCase()
+    .replace(/[^\w\s\-\/]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length > 2);
+  
+  // Extract phrases (2-3 word combinations that might be meaningful)
+  const phrases: string[] = [];
+  const words = text.toLowerCase().split(/\s+/);
+  for (let i = 0; i < words.length - 1; i++) {
+    const w1 = words[i].replace(/[^\w\-]/g, '');
+    const w2 = words[i + 1].replace(/[^\w\-]/g, '');
+    if (w1.length > 2 && w2.length > 2 && !STOPWORDS.has(w1) && !STOPWORDS.has(w2)) {
+      phrases.push(`${w1} ${w2}`);
+    }
+  }
+  
+  // Filter tokens
+  const filtered = tokens.filter(t => 
+    !STOPWORDS.has(t) && 
+    !GENERIC_WORDS.has(t) &&
+    t.length > 2
+  );
+  
+  // Dedupe and prioritize
+  const seen = new Set<string>();
+  const result: string[] = [];
+  
+  // Add phrases first (more specific)
+  for (const p of phrases) {
+    if (!seen.has(p) && result.length < 10) {
+      seen.add(p);
+      result.push(p);
+    }
+  }
+  
+  // Then single words
+  for (const w of filtered) {
+    if (!seen.has(w) && result.length < 15) {
+      seen.add(w);
+      result.push(w);
+    }
+  }
+  
+  return result;
+}
+
+function determineIntentAngle(keywords: string[]): string {
+  const keywordStr = keywords.join(' ').toLowerCase();
+  
+  if (keywordStr.match(/scale|growth|market|expand|international|global|latam|emea|apac/)) {
+    return 'shared scaling challenge';
+  }
+  if (keywordStr.match(/regulated|compliance|privacy|security|audit|legal|policy/)) {
+    return 'shared regulatory constraint';
+  }
+  if (keywordStr.match(/ai|ml|machine learning|automation|data|analytics/)) {
+    return 'shared technical domain';
+  }
+  if (keywordStr.match(/founder|startup|build|launch|ship|product/)) {
+    return 'shared builder experience';
+  }
+  if (keywordStr.match(/ops|operations|process|efficiency|workflow/)) {
+    return 'shared operational focus';
+  }
+  if (keywordStr.match(/mission|impact|underrepresented|diversity|social/)) {
+    return 'shared mission/value';
+  }
+  if (keywordStr.match(/pivot|transition|career|decision|tradeoff/)) {
+    return 'shared moment/decision';
+  }
+  
+  return 'shared domain problem';
+}
+
+// ============= QUERY PLAN BUILDER =============
+
+function buildExaQueryPlan(input: {
+  recipientName: string;
+  recipientCompany: string;
+  recipientRole: string;
+  reachingOutBecause: string;
+  credibilityStory: string;
+  askType: AskType;
+}): QueryPlan {
+  const { recipientName, recipientCompany, recipientRole, reachingOutBecause, credibilityStory } = input;
+  
+  // Extract keywords from sender intent
+  const reasonKeywords = extractKeywords(reachingOutBecause).slice(0, 8);
+  const storyKeywords = extractKeywords(credibilityStory).slice(0, 5);
+  const intentKeywords = [...new Set([...reasonKeywords, ...storyKeywords])].slice(0, 10);
+  
+  const intentAngle = determineIntentAngle(intentKeywords);
+  
+  console.log('Intent keywords:', intentKeywords);
+  console.log('Intent angle:', intentAngle);
+  
+  const queries: string[] = [];
+  
+  // Get top 2 keywords for query building
+  const kw1 = intentKeywords[0] || '';
+  const kw2 = intentKeywords[1] || '';
+  const kwPhrase = intentKeywords.find(k => k.includes(' ')) || '';
+  
+  // Tier A: Long-form / opinion / interview content
+  if (kw1) {
+    queries.push(`"${recipientName}" interview ${kw1}${kw2 ? ' ' + kw2 : ''}`);
+  }
+  if (kw1) {
+    queries.push(`"${recipientName}" podcast ${kw1}`);
+  }
+  if (kw1) {
+    queries.push(`"${recipientName}" talk OR keynote ${kw1}`);
+  }
+  if (kw1) {
+    queries.push(`"${recipientName}" wrote OR essay ${kw1}`);
+  }
+  if (kwPhrase) {
+    queries.push(`"${recipientName}" "${kwPhrase}"`);
+  }
+  
+  // Tier B: Initiative / project angle
+  if (kw1) {
+    queries.push(`"${recipientName}" ${kw1} initiative OR program`);
+  }
+  if (kw1) {
+    queries.push(`"${recipientCompany}" ${kw1} ${recipientName}`);
+  }
+  
+  // Tier C: Fallback identity (only if we don't have enough keywords)
+  if (intentKeywords.length < 3) {
+    queries.push(`"${recipientName}" "${recipientCompany}" ${recipientRole}`);
+    queries.push(`"${recipientName}" "${recipientCompany}"`);
+  }
+  
+  // Dedupe and limit to 6 queries
+  const uniqueQueries = [...new Set(queries)].slice(0, 6);
+  
+  return {
+    queries: uniqueQueries,
+    intent_keywords: intentKeywords,
+    intent_angle: intentAngle,
+  };
+}
+
+// ============= URL SCORING (NICHE-ENOUGH) =============
+
+interface UrlScoreResult {
+  score: number;
+  reasons: string[];
+}
+
+function scoreUrl(url: string, title?: string): UrlScoreResult {
+  const lowerUrl = url.toLowerCase();
+  const lowerTitle = (title || '').toLowerCase();
+  
+  let score = 0;
+  const reasons: string[] = [];
+  
+  // Positive signals (artifacts)
+  const artifactPatterns = [
+    'podcast', 'interview', 'transcript', 'talk', 'keynote', 'panel',
+    'blog', 'essay', 'op-ed', 'newsletter', 'fireside', 'conversation',
+    'wrote', 'writes', 'author'
+  ];
+  
+  for (const pattern of artifactPatterns) {
+    if (lowerUrl.includes(pattern) || lowerTitle.includes(pattern)) {
+      score += 3;
+      reasons.push(`+3: artifact pattern "${pattern}"`);
+      break;
+    }
+  }
+  
+  // Publication/event sites boost
+  const publicationDomains = [
+    'medium.com', 'substack.com', 'forbes.com', 'techcrunch.com', 'wired.com',
+    'hbr.org', 'mit.edu', 'stanford.edu', 'ycombinator.com', 'firstround.com',
+    'a16z.com', 'sequoia.com', 'nfx.com', 'reforge.com', 'lenny', 'stratechery',
+    'fastcompany.com', 'inc.com', 'entrepreneur.com', 'bloomberg.com',
+    'axios.com', 'protocol.com', 'theinformation.com', 'podcasts', 'youtube.com/watch'
+  ];
+  
+  for (const domain of publicationDomains) {
+    if (lowerUrl.includes(domain)) {
+      score += 2;
+      reasons.push(`+2: publication domain "${domain}"`);
+      break;
+    }
+  }
+  
+  // LinkedIn penalty (but don't block entirely)
+  if (lowerUrl.includes('linkedin.com')) {
+    score -= 5;
+    reasons.push('-5: LinkedIn');
+  }
+  
+  // Bio/about page penalty
+  const bioPatterns = ['/about', '/bio', '/leadership', '/team', '/company', '/executive', 'wikipedia.org'];
+  for (const pattern of bioPatterns) {
+    if (lowerUrl.includes(pattern)) {
+      score -= 4;
+      reasons.push(`-4: bio pattern "${pattern}"`);
+      break;
+    }
+  }
+  
+  // Title penalties
+  const badTitlePatterns = ['executive profile', 'leadership', 'about', 'biography', 'board of directors'];
+  for (const pattern of badTitlePatterns) {
+    if (lowerTitle.includes(pattern)) {
+      score -= 3;
+      reasons.push(`-3: bad title pattern "${pattern}"`);
+      break;
+    }
+  }
+  
+  return { score, reasons };
+}
+
+function isNicheEnoughResult(url: string, title: string, snippet: string): boolean {
+  const scoreResult = scoreUrl(url, title);
+  
+  // Must have positive score to be considered niche
+  if (scoreResult.score < 0) return false;
+  
+  // Check snippet for opinion/viewpoint indicators
+  const opinionIndicators = [
+    'i think', 'i believe', 'we learned', 'lesson', 'mistake', 'challenge',
+    'surprised', 'realized', 'decision', 'why we', 'how we', 'built', 'shipped',
+    'launched', 'grew', 'scaled', 'pivoted', 'failed', 'succeeded'
+  ];
+  
+  const lowerSnippet = snippet.toLowerCase();
+  const hasOpinion = opinionIndicators.some(ind => lowerSnippet.includes(ind));
+  
+  if (hasOpinion) return true;
+  
+  // If no opinion but score is high enough, still include
+  return scoreResult.score >= 3;
+}
+
+// ============= VALIDATOR HELPERS =============
 
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(w => w.length > 0).length;
@@ -150,13 +456,11 @@ function hasEmDash(text: string): boolean {
   return text.includes('—');
 }
 
-// Count "Like you," specifically (capital L, comma)
 function countLikeYouCapitalized(text: string): number {
   const matches = text.match(/Like you,/g);
   return matches ? matches.length : 0;
 }
 
-// Count any case of "like you" for validation
 function countLikeYouAny(text: string): number {
   const lowerText = text.toLowerCase();
   const matches = lowerText.match(/like you/g);
@@ -194,7 +498,6 @@ function validateEmail(
 ): ValidationResult {
   const errors: string[] = [];
   
-  // A. JSON validity + required fields
   let parsed: { subject?: string; body?: string };
   try {
     const cleaned = rawText.replace(/```json\n?|\n?```/g, '').trim();
@@ -219,7 +522,6 @@ function validateEmail(
   const body = parsed.body!;
   const combinedText = `${subject} ${body}`;
 
-  // B. "Like you," constraint - must be exactly once with capital L and comma
   const likeYouCapCount = countLikeYouCapitalized(body);
   const likeYouAnyCount = countLikeYouAny(body);
   
@@ -233,7 +535,6 @@ function validateEmail(
     errors.push(`Body contains "Like you," ${likeYouCapCount} times (must be exactly once)`);
   }
 
-  // C. "Like you," sentence cannot be generic
   if (likeYouAnyCount >= 1) {
     const likeYouSentence = extractSentenceWithLikeYou(body);
     if (likeYouSentence) {
@@ -247,7 +548,6 @@ function validateEmail(
     }
   }
 
-  // D. Ban specific cliché phrases
   let clicheCount = 0;
   for (const cliche of BANNED_CLICHES) {
     if (combinedText.toLowerCase().includes(cliche)) {
@@ -256,12 +556,10 @@ function validateEmail(
     }
   }
 
-  // E. Bracket placeholders
   if (hasBracketPlaceholders(combinedText)) {
     errors.push('Contains bracket placeholders like [Name]');
   }
 
-  // F. Formatting - greeting
   const bodyLines = body.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   if (bodyLines.length > 0) {
     const firstLine = bodyLines[0];
@@ -272,13 +570,11 @@ function validateEmail(
     }
   }
 
-  // G. Formatting - sign-off (must end with "Best," and nothing after)
   const trimmedBody = body.trimEnd();
   if (!trimmedBody.endsWith('Best,')) {
     errors.push('Body must end with exactly "Best," and nothing after');
   }
 
-  // H. Em-dash ban
   if (hasEmDash(body)) {
     errors.push('Body contains em-dash (—) which is banned');
   }
@@ -286,12 +582,10 @@ function validateEmail(
     errors.push('Subject contains em-dash (—) which is banned');
   }
 
-  // I. Ellipsis ban
   if (body.includes('...') || body.includes('…')) {
     errors.push('Body contains ellipsis (... or …) which is banned');
   }
 
-  // J. Word count (90-170 range per spec)
   const wordCount = countWords(body);
   if (wordCount < 90) {
     errors.push(`Body has ${wordCount} words (minimum 90 required)`);
@@ -386,80 +680,9 @@ async function callLLM(
   return data.choices[0].message.content;
 }
 
-// ============= URL FILTERING & SCORING =============
+// ============= EXA SEARCH WITH CONTENT =============
 
-const BLOCKED_DOMAINS = [
-  'youtube.com',
-  'youtu.be',
-  'twitter.com',
-  'x.com',
-  'linkedin.com',
-  'facebook.com',
-  'instagram.com',
-  'tiktok.com',
-];
-
-const HIGH_PRIORITY_PATTERNS = [
-  'podcast',
-  'interview',
-  'transcript',
-  'keynote',
-  'talk',
-  'essay',
-  'blog',
-  'article',
-  'q-a',
-  'qa',
-  'fireside',
-  'conversation',
-];
-
-const LOW_PRIORITY_PATTERNS = [
-  '/about',
-  '/team',
-  '/leadership',
-  '/executive',
-  '/press-release',
-  '/news/',
-];
-
-function isBlockedUrl(url: string): boolean {
-  const lowerUrl = url.toLowerCase();
-  return BLOCKED_DOMAINS.some(domain => lowerUrl.includes(domain));
-}
-
-function scoreSourceUrl(url: string, title: string): number {
-  const lowerUrl = url.toLowerCase();
-  const lowerTitle = title.toLowerCase();
-  let score = 50; // Base score
-  
-  // High priority patterns boost score
-  for (const pattern of HIGH_PRIORITY_PATTERNS) {
-    if (lowerUrl.includes(pattern) || lowerTitle.includes(pattern)) {
-      score += 20;
-      break;
-    }
-  }
-  
-  // Low priority patterns reduce score
-  for (const pattern of LOW_PRIORITY_PATTERNS) {
-    if (lowerUrl.includes(pattern)) {
-      score -= 20;
-      break;
-    }
-  }
-  
-  // Company pages are lower priority
-  if (lowerUrl.includes('/about') || lowerUrl.includes('/team')) {
-    score -= 15;
-  }
-  
-  return score;
-}
-
-// ============= EXA SEARCH (Discovery Only) =============
-
-async function exaSearch(query: string, exaApiKey: string): Promise<ExaResult[]> {
+async function exaSearchWithContent(query: string, exaApiKey: string, numResults: number = 8): Promise<ExaResult[]> {
   console.log('Exa search query:', query);
   
   const response = await fetch('https://api.exa.ai/search', {
@@ -470,15 +693,15 @@ async function exaSearch(query: string, exaApiKey: string): Promise<ExaResult[]>
     },
     body: JSON.stringify({
       query,
-      numResults: 8,
+      numResults,
       type: 'neural',
       useAutoprompt: true,
       contents: {
         text: {
-          maxCharacters: 500, // Just for snippets, not full content
+          maxCharacters: 3000, // Get more content for extraction
         },
         highlights: {
-          numSentences: 3,
+          numSentences: 5,
         },
       },
     }),
@@ -496,189 +719,133 @@ async function exaSearch(query: string, exaApiKey: string): Promise<ExaResult[]>
   return (data.results || []).map((r: any) => ({
     url: r.url || '',
     title: r.title || '',
-    snippet: r.highlights?.join(' ') || r.text?.substring(0, 500) || '',
+    snippet: r.highlights?.join(' ') || '',
+    text: r.text || '',
   }));
 }
 
-// ============= FIRECRAWL EXTRACTION =============
-
-async function firecrawlScrape(url: string, firecrawlApiKey: string): Promise<{ markdown: string; title: string } | null> {
-  console.log('Firecrawl scraping:', url);
-  
-  try {
-    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${firecrawlApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url,
-        formats: ['markdown'],
-        onlyMainContent: true,
-        waitFor: 1000,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Firecrawl error for', url, ':', response.status, errorText);
-      return null;
-    }
-
-    const data = await response.json();
-    const markdown = data.data?.markdown || data.markdown || '';
-    const title = data.data?.metadata?.title || data.metadata?.title || '';
-    
-    console.log(`Firecrawl result for ${url}: ${markdown.length} chars`);
-    
-    return { markdown, title };
-  } catch (e) {
-    console.error('Firecrawl fetch error for', url, ':', e);
-    return null;
-  }
-}
-
-// ============= RESEARCH PIPELINE =============
+// ============= RESEARCH PIPELINE (EXA ONLY) =============
 
 async function performResearch(
   recipientName: string,
   recipientCompany: string,
   recipientRole: string,
   reachingOutBecause: string,
-  exaApiKey: string,
-  firecrawlApiKey: string | undefined
+  credibilityStory: string,
+  askType: AskType,
+  exaApiKey: string
 ): Promise<{
-  queries: string[];
+  queryPlan: QueryPlan;
+  queriesUsed: string[];
   exaResults: ExaResult[];
-  selectedUrls: string[];
-  firecrawlContents: FirecrawlContent[];
+  selectedResults: ExaResult[];
+  debug: ResearchDebug;
 }> {
-  const queries: string[] = [];
+  console.log('=== STEP 1: Build Query Plan ===');
+  
+  // Build query plan based on sender intent
+  const queryPlan = buildExaQueryPlan({
+    recipientName,
+    recipientCompany,
+    recipientRole,
+    reachingOutBecause,
+    credibilityStory,
+    askType,
+  });
+  
+  console.log('Query plan:', queryPlan);
+  
+  const queriesUsed: string[] = [];
   let allResults: ExaResult[] = [];
+  const urlScores: { url: string; title: string; score: number; reasons: string[] }[] = [];
   
-  // ============= STEP 1: Exa Discovery (search only) =============
-  console.log('=== STEP 1: Exa Discovery ===');
+  // ============= STEP 2: Exa Search with Early Stopping =============
+  console.log('=== STEP 2: Exa Search ===');
   
-  // Primary query with quoted name and company for precision
-  const query1 = `"${recipientName}" "${recipientCompany}" interview OR podcast OR talk OR keynote OR essay OR blog OR wrote OR "I think" OR "I believe"`;
-  queries.push(query1);
+  const MAX_QUERIES = 3;
+  const MIN_NICHE_RESULTS = 2;
   
-  const results1 = await exaSearch(query1, exaApiKey);
-  allResults = [...results1];
-  
-  // Check if results look generic or mixed
-  const nonBlockedResults = results1.filter(r => !isBlockedUrl(r.url));
-  const hasSpecificContent = nonBlockedResults.some(r => 
-    HIGH_PRIORITY_PATTERNS.some(p => 
-      r.url.toLowerCase().includes(p) || r.title.toLowerCase().includes(p)
-    )
-  );
-  
-  // Disambiguation fallback if results look mixed or generic
-  if (!hasSpecificContent && nonBlockedResults.length < 3) {
-    console.log('Results look generic or mixed, trying disambiguation fallback...');
-    const query2 = `"${recipientName}" "${recipientCompany}" "${recipientRole}"`;
-    queries.push(query2);
+  for (let i = 0; i < Math.min(queryPlan.queries.length, MAX_QUERIES); i++) {
+    const query = queryPlan.queries[i];
+    queriesUsed.push(query);
     
-    const results2 = await exaSearch(query2, exaApiKey);
+    const results = await exaSearchWithContent(query, exaApiKey);
+    
     // Dedupe by URL
-    for (const r of results2) {
+    for (const r of results) {
       if (!allResults.find(existing => existing.url === r.url)) {
         allResults.push(r);
+        
+        // Score each URL
+        const scoreResult = scoreUrl(r.url, r.title);
+        urlScores.push({
+          url: r.url,
+          title: r.title,
+          score: scoreResult.score,
+          reasons: scoreResult.reasons,
+        });
       }
     }
-  }
-  
-  // Filter out blocked URLs
-  const filteredResults = allResults.filter(r => !isBlockedUrl(r.url));
-  console.log(`Filtered ${allResults.length - filteredResults.length} blocked URLs, ${filteredResults.length} remaining`);
-  
-  // Score and sort remaining URLs
-  const scoredResults = filteredResults.map(r => ({
-    ...r,
-    score: scoreSourceUrl(r.url, r.title)
-  })).sort((a, b) => b.score - a.score);
-  
-  console.log('Scored results:', scoredResults.map(r => ({ url: r.url, score: r.score })));
-  
-  // Select top 3 for extraction
-  const selectedUrls = scoredResults.slice(0, 3).map(r => r.url);
-  console.log('Selected URLs for extraction:', selectedUrls);
-  
-  // ============= STEP 2: Firecrawl Extraction =============
-  console.log('=== STEP 2: Firecrawl Extraction ===');
-  
-  const firecrawlContents: FirecrawlContent[] = [];
-  
-  if (firecrawlApiKey && selectedUrls.length > 0) {
-    // Parallelize Firecrawl calls for ~3x speedup
-    console.log(`Scraping ${selectedUrls.length} URLs in parallel...`);
-    const scrapePromises = selectedUrls.map(url => firecrawlScrape(url, firecrawlApiKey));
-    const scrapeResults = await Promise.all(scrapePromises);
     
-    // Process results
-    for (let i = 0; i < selectedUrls.length; i++) {
-      const url = selectedUrls[i];
-      const result = scrapeResults[i];
-      
-      if (result && result.markdown.length >= 500) {
-        firecrawlContents.push({
-          url,
-          title: result.title,
-          markdown: result.markdown.substring(0, 5000), // Cap at 5k chars
-          source: 'firecrawl',
-        });
-        console.log(`✓ Firecrawl success for ${url}: ${result.markdown.length} chars`);
-      } else if (result && result.markdown.length > 0 && result.markdown.length < 500) {
-        // Fallback to snippet if Firecrawl returns too little
-        console.log(`⚠ Firecrawl returned short content (${result.markdown.length} chars), using snippet fallback`);
-        const originalResult = scoredResults.find(r => r.url === url);
-        if (originalResult && originalResult.snippet.length > 100) {
-          firecrawlContents.push({
-            url,
-            title: originalResult.title,
-            markdown: originalResult.snippet,
-            source: 'snippet_fallback',
-          });
-        }
-      } else {
-        // No content, try snippet fallback
-        console.log(`✗ Firecrawl failed for ${url}, using snippet fallback`);
-        const originalResult = scoredResults.find(r => r.url === url);
-        if (originalResult && originalResult.snippet.length > 100) {
-          firecrawlContents.push({
-            url,
-            title: originalResult.title,
-            markdown: originalResult.snippet,
-            source: 'snippet_fallback',
-          });
-        }
-      }
+    // Check if we have enough niche results
+    const nicheResults = allResults.filter(r => isNicheEnoughResult(r.url, r.title, r.snippet || r.text || ''));
+    console.log(`After query ${i + 1}: ${allResults.length} total, ${nicheResults.length} niche-enough`);
+    
+    if (nicheResults.length >= MIN_NICHE_RESULTS) {
+      console.log('Early stopping: enough niche results found');
+      break;
     }
-  } else if (!firecrawlApiKey) {
-    console.log('FIRECRAWL_API_KEY not configured, using snippets only');
-    // Fallback to snippets
-    for (const url of selectedUrls) {
-      const originalResult = scoredResults.find(r => r.url === url);
-      if (originalResult && originalResult.snippet.length > 50) {
-        firecrawlContents.push({
-          url,
-          title: originalResult.title,
-          markdown: originalResult.snippet,
-          source: 'snippet_fallback',
-        });
+  }
+  
+  // ============= STEP 3: Score and Select Top Results =============
+  console.log('=== STEP 3: Score and Select ===');
+  
+  // Sort by score
+  urlScores.sort((a, b) => b.score - a.score);
+  console.log('URL scores:', urlScores.map(s => ({ url: s.url.substring(0, 60), score: s.score })));
+  
+  // Select top 2-4 results that are niche-enough
+  const selectedResults: ExaResult[] = [];
+  const urlsFetched: string[] = [];
+  
+  for (const scored of urlScores) {
+    if (selectedResults.length >= 4) break;
+    
+    const result = allResults.find(r => r.url === scored.url);
+    if (result && isNicheEnoughResult(result.url, result.title, result.snippet || result.text || '')) {
+      selectedResults.push(result);
+      urlsFetched.push(result.url);
+    }
+  }
+  
+  // If we don't have enough niche results, add top-scored anyway (as fallback)
+  if (selectedResults.length < 2) {
+    for (const scored of urlScores) {
+      if (selectedResults.length >= 2) break;
+      
+      const result = allResults.find(r => r.url === scored.url);
+      if (result && !selectedResults.includes(result)) {
+        selectedResults.push(result);
+        urlsFetched.push(result.url);
       }
     }
   }
   
-  console.log(`Firecrawl extraction complete: ${firecrawlContents.length} sources with content`);
+  console.log(`Selected ${selectedResults.length} results for extraction:`, urlsFetched);
+  
+  const debug: ResearchDebug = {
+    queryPlan,
+    queriesUsed,
+    urlScores,
+    urlsFetched,
+  };
   
   return {
-    queries,
-    exaResults: allResults.slice(0, 8), // Keep top 8 for logging
-    selectedUrls,
-    firecrawlContents,
+    queryPlan,
+    queriesUsed,
+    exaResults: allResults.slice(0, 8),
+    selectedResults,
+    debug,
   };
 }
 
@@ -688,70 +855,76 @@ async function extractHookFacts(
   recipientName: string,
   recipientRole: string,
   recipientCompany: string,
-  firecrawlContents: FirecrawlContent[],
+  selectedResults: ExaResult[],
   reachingOutBecause: string,
+  intentKeywords: string[],
   LOVABLE_API_KEY: string
-): Promise<HookFact[]> {
-  console.log('=== STEP 3: Hook Fact Extraction ===');
+): Promise<{ facts: HookFact[]; rejectionReasons: string[] }> {
+  console.log('=== STEP 4: Hook Fact Extraction ===');
   
-  if (firecrawlContents.length === 0) {
+  if (selectedResults.length === 0) {
     console.log('No content to extract facts from');
-    return [];
+    return { facts: [], rejectionReasons: ['No search results to extract from'] };
   }
   
-  // Build context from Firecrawl content
-  const sourcesContext = firecrawlContents.map((content, i) => `
-SOURCE ${i + 1}: ${content.url}
-Title: ${content.title}
-Content (${content.source}):
-${content.markdown}
+  // Build context from Exa content
+  const sourcesContext = selectedResults.map((result, i) => `
+SOURCE ${i + 1}: ${result.url}
+Title: ${result.title}
+Content:
+${result.text || result.snippet || '(no content)'}
 `).join('\n---\n');
+
+  const keywordsContext = intentKeywords.length > 0 
+    ? `\nSender's intent keywords: ${intentKeywords.join(', ')}`
+    : '';
 
   const extractionPrompt = `You are analyzing public content about ${recipientName}, ${recipientRole} at ${recipientCompany}.
 
-The sender wants to reach out because: "${reachingOutBecause}"
+The sender wants to reach out because: "${reachingOutBecause}"${keywordsContext}
 
 Here are the sources found:
 ${sourcesContext}
 
-Extract 0-2 "hook facts" that could be used to personalize a cold email. A hook fact is a specific, non-generic piece of information that:
-1. Shows something distinctive about the recipient's thinking, work, or experiences
-2. Could create a genuine connection point with the sender
-3. Is NOT just their job title, timeline, or "co-founded X" unless there's a concrete angle
+Extract 0-3 "hook facts" that could be used to personalize a cold email. 
+
+A NICHE-ENOUGH hook fact is:
+✓ A specific opinion/idea they expressed (with context)
+✓ A specific initiative with a "why" angle
+✓ A notable takeaway from a talk/podcast/interview
+✓ A concrete non-obvious detail that bridges to sender story
+
+NOT niche-enough (REJECT these):
+✗ "X is EVP at Y" (just job title)
+✗ "X joined Y in 2023" (just timeline)
+✗ "X previously worked at Z" (just history)
+✗ "X co-founded A" without an angle
+✗ "X is known for..." (generic)
+✗ Generic awards or "featured in" lists
 
 STRICT REQUIREMENTS for each fact:
 - claim: A specific, interesting observation (not generic)
 - source_url: The exact URL from the sources above
-- evidence_quote: 8-25 words pulled DIRECTLY from the source content that supports the claim. This MUST be a real quote you can see in the content.
-- why_relevant: Why this matters for the outreach
-- bridge_type: One of "intent" (connects to sender's goal), "credibility" (parallel experience), or "curiosity" (interesting conversation starter)
-- hook_score: 1-5 (5 = highly specific and relevant)
+- evidence_quote: 8-25 words pulled DIRECTLY from the source content
+- why_relevant: Why this matters for the outreach (connect to sender intent)
+- bridge_type: "intent" (connects to sender's goal), "credibility" (parallel experience), or "curiosity" (interesting conversation starter)
+- hook_score: 1-5 (5 = highly specific and relevant, 1 = borderline useful)
 
 IMPORTANT:
-- If you cannot provide an evidence_quote (8-25 words) that actually appears in the source, DO NOT include the fact
-- Avoid generic facts like job titles or company founding dates
-- Return EMPTY array [] if no specific, supported facts can be found
-- Maximum 2 facts
+- Only include facts with hook_score >= 3
+- If you cannot find niche-enough facts, return EMPTY array []
+- Maximum 3 facts, prefer quality over quantity
 
 Return ONLY valid JSON in this format:
 {
-  "facts": [
-    {
-      "claim": "...",
-      "source_url": "...",
-      "evidence_quote": "...",
-      "why_relevant": "...",
-      "bridge_type": "intent|credibility|curiosity",
-      "hook_score": 1
-    }
-  ],
-  "notes": "Optional notes about why you included or excluded certain facts"
+  "facts": [...],
+  "rejection_reasons": ["reason why a potential fact was rejected", ...]
 }`;
 
   try {
     const response = await callLLM(
       LOVABLE_API_KEY,
-      'You are a research analyst extracting specific, verifiable facts from source documents. Be rigorous about evidence.',
+      'You are a research analyst extracting specific, verifiable facts. Be rigorous about what counts as "niche-enough". Reject generic bio information.',
       extractionPrompt,
       RESEARCH_MODEL_NAME
     );
@@ -759,15 +932,20 @@ Return ONLY valid JSON in this format:
     const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     
-    const facts: HookFact[] = (parsed.facts || []).slice(0, 2);
+    // Filter to only include facts with score >= 3
+    const facts: HookFact[] = (parsed.facts || [])
+      .filter((f: HookFact) => f.hook_score >= 3)
+      .slice(0, 3);
+    
+    const rejectionReasons: string[] = parsed.rejection_reasons || [];
+    
     console.log('Extracted hook facts:', facts.length);
-    if (parsed.notes) {
-      console.log('Extraction notes:', parsed.notes);
-    }
-    return facts;
+    console.log('Rejection reasons:', rejectionReasons);
+    
+    return { facts, rejectionReasons };
   } catch (e) {
     console.error('Failed to extract hook facts:', e);
-    return [];
+    return { facts: [], rejectionReasons: ['Extraction failed: ' + String(e)] };
   }
 }
 
@@ -784,7 +962,7 @@ serve(async (req) => {
     const recipientName = body.recipientName || '';
     const recipientCompany = body.recipientCompany || '';
     const recipientRole = body.recipientRole || '';
-    const askType = body.askType || 'chat';
+    const askType = (body.askType || 'chat') as AskType;
     const reachingOutBecause = body.reachingOutBecause || '';
     const credibilityStory = body.credibilityStory || '';
     const sharedAffiliation = body.sharedAffiliation || null;
@@ -792,6 +970,7 @@ serve(async (req) => {
     const source = body.source || 'app';
     const scenarioName = body.scenario_name || body.scenarioName || null;
     const sessionId = body.sessionId || null;
+    const includeDebug = body.includeDebug || source === 'test_harness';
 
     // Input validation
     if (!recipientName || recipientName.length < 2 || recipientName.length > 100) {
@@ -843,7 +1022,6 @@ serve(async (req) => {
 
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     const EXA_API_KEY = Deno.env.get('EXA_API_KEY');
-    const FIRECRAWL_API_KEY = Deno.env.get('FIRECRAWL_API_KEY');
     
     if (!LOVABLE_API_KEY) {
       console.error('LOVABLE_API_KEY is not configured');
@@ -858,10 +1036,11 @@ serve(async (req) => {
     let exaResults: ExaResult[] = [];
     let selectedSources: string[] = [];
     let hookFacts: HookFact[] = [];
-    let firecrawlContents: FirecrawlContent[] = [];
+    let researchDebug: ResearchDebug | null = null;
+    let intentKeywords: string[] = [];
     
     if (EXA_API_KEY) {
-      console.log('Starting research pipeline...');
+      console.log('Starting research pipeline (Exa only)...');
       
       try {
         const researchData = await performResearch(
@@ -869,37 +1048,48 @@ serve(async (req) => {
           recipientCompany,
           recipientRole,
           reachingOutBecause,
-          EXA_API_KEY,
-          FIRECRAWL_API_KEY
+          credibilityStory,
+          askType,
+          EXA_API_KEY
         );
         
-        exaQueries = researchData.queries;
+        exaQueries = researchData.queriesUsed;
         exaResults = researchData.exaResults;
-        selectedSources = researchData.selectedUrls;
-        firecrawlContents = researchData.firecrawlContents;
+        selectedSources = researchData.selectedResults.map(r => r.url);
+        intentKeywords = researchData.queryPlan.intent_keywords;
+        researchDebug = researchData.debug;
         
-        console.log(`Research complete: ${exaResults.length} Exa results, ${firecrawlContents.length} Firecrawl extractions`);
+        console.log(`Research complete: ${exaResults.length} Exa results, ${researchData.selectedResults.length} selected`);
         
-        // Extract hook facts from Firecrawl content
-        hookFacts = await extractHookFacts(
+        // Extract hook facts from selected results
+        const extraction = await extractHookFacts(
           recipientName,
           recipientRole,
           recipientCompany,
-          firecrawlContents,
+          researchData.selectedResults,
           reachingOutBecause,
+          intentKeywords,
           LOVABLE_API_KEY
         );
         
-        console.log(`Extracted ${hookFacts.length} hook facts`);
+        hookFacts = extraction.facts;
+        if (researchDebug) {
+          researchDebug.factRejectionReasons = extraction.rejectionReasons;
+        }
+        
+        console.log(`Extracted ${hookFacts.length} niche hook facts`);
       } catch (e) {
         console.error('Research pipeline failed:', e);
+        if (researchDebug) {
+          researchDebug.notes = 'Research pipeline failed: ' + String(e);
+        }
       }
     } else {
       console.log('EXA_API_KEY not configured, skipping research');
     }
 
     // ============= GENERATE EMAIL =============
-    console.log('=== STEP 4: Generate Email ===');
+    console.log('=== STEP 5: Generate Email ===');
     
     // Build shared affiliation section if provided
     let sharedAffiliationSection = '';
@@ -991,7 +1181,6 @@ Only return the JSON, no other text.`;
       if (!validation.valid) {
         console.log('Validation failed (attempt 1):', validation.errors);
         
-        // Retry with specific failure feedback
         enforcementResults.did_retry = true;
         const retryPrompt = userPrompt + buildRetryInstruction(validation.errors);
         
@@ -1054,13 +1243,13 @@ Only return the JSON, no other text.`;
     console.log(`exa_queries: ${exaQueries.length}`);
     console.log(`exa_results: ${exaResults.length}`);
     console.log(`selected_sources: ${selectedSources.length}`);
-    console.log(`firecrawl_contents: ${firecrawlContents.length}`);
     console.log(`hook_facts: ${hookFacts.length}`);
     console.log(`did_retry: ${enforcementResults.did_retry}`);
     console.log(`failures_first_pass: ${JSON.stringify(enforcementResults.failures_first_pass)}`);
     console.log(`like_you_count: ${likeYouCount}`);
     console.log(`word_count: ${wordCount}`);
     console.log(`validator_passed: ${validation.valid}`);
+    console.log(`latency_ms: ${latencyMs}`);
     console.log('============================');
 
     // Log to email_generations table
@@ -1107,28 +1296,36 @@ Only return the JSON, no other text.`;
       console.error('Error logging generation:', logError);
     }
 
+    // Build response
+    const responseData: any = {
+      subject: emailData.subject,
+      body: emailData.body,
+      // Research data
+      exaQueries,
+      exaResults: exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })),
+      selectedSources,
+      hookFacts,
+      // Legacy compatibility
+      researchedFacts: hookFacts.map(f => f.claim),
+      // Enforcement
+      enforcementResults,
+      // Validation
+      validatorPassed: validation.valid,
+      validatorErrors: validation.valid ? null : validation.errors,
+      // Metrics
+      likeYouCount,
+      wordCount,
+      clicheCount,
+      retryUsed: enforcementResults.did_retry,
+    };
+
+    // Include debug data for test harness
+    if (includeDebug && researchDebug) {
+      responseData.debug = researchDebug;
+    }
+
     return new Response(
-      JSON.stringify({
-        subject: emailData.subject,
-        body: emailData.body,
-        // Research data
-        exaQueries,
-        exaResults: exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })),
-        selectedSources,
-        hookFacts,
-        // Legacy compatibility
-        researchedFacts: hookFacts.map(f => f.claim),
-        // Enforcement
-        enforcementResults,
-        // Validation
-        validatorPassed: validation.valid,
-        validatorErrors: validation.valid ? null : validation.errors,
-        // Metrics
-        likeYouCount,
-        wordCount,
-        clicheCount,
-        retryUsed: enforcementResults.did_retry,
-      }),
+      JSON.stringify(responseData),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
