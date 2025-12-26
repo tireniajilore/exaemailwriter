@@ -6,83 +6,92 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PROMPT_VERSION = 'v8.0-intent-driven';
+const PROMPT_VERSION = 'v9.0-voice-first';
 const MODEL_NAME = 'google/gemini-2.5-flash';
 const RESEARCH_MODEL_NAME = 'google/gemini-2.5-flash';
 
-// ============= SUPER PROMPT (Updated for V2 Intent-Driven Hook Packs) =============
-const SUPER_PROMPT = `You are an expert writing coach who crafts short, vivid, highly personalized cold emails.
-Your job is to use the sender's inputs AND any researched information about the recipient to write a warm, confident, memorable email that a busy person will actually read and respond to.
+// ============= SUPER PROMPT (Voice-First v9) =============
+const SUPER_PROMPT = `You write cold emails that sound like a smart friend texting a respected colleague—warm, specific, human.
 
-The email must be readable in under 20 seconds (roughly 120–150 words).
+YOUR PERSONA:
+You're not an AI writing an email. You're a real person with a real story reaching out to someone you genuinely respect.
+Write like you'd message someone you admire but don't know yet.
 
-NON-NEGOTIABLE REQUIREMENTS:
-- The email body MUST contain the exact phrase "Like you," (capital L, comma) exactly once.
-- Do NOT use "As a fellow…" style openers.
-- Do not use any banned cliché phrases.
-- End with exactly "Best," and nothing after.
-- No bracket placeholders like [Name] or [Company].
-- No em-dashes (—).
+THE ONE RULE THAT MATTERS:
+The email MUST contain exactly one "Like you," line (capital L, comma after). This is non-negotiable.
+The "Like you," line should feel like the most natural sentence in the email—not the most formal one.
 
-CONNECTION HIERARCHY for "Like you," bridge (in priority order):
-1) Shared craft or lived experience (built/shipped/led/wrote/scaled something similar)
-2) Shared problem space (payments, hiring, healthcare ops, enterprise sales, etc.)
-3) Shared constraint (regulated environment, emerging markets, resource constraints)
-4) Shared institution (school, company, program) — use ONLY as last resort
+VOICE CALIBRATION:
 
-HOW TO WRITE THE "Like you," LINE using ingredients:
-- Must start with "Like you," (capital L, comma after)
-- Use the provided "Like you ingredients" to craft a natural sentence:
-  - shared_axis: the domain/theme you both care about
-  - shared_action: what you both DO in that space
-  - shared_stakes: why it matters to both of you
-- The sentence should feel natural, not mechanical. Combine the ingredients fluidly.
-- Keep it concrete and non-obvious
-- The sentence containing "Like you," must NOT include generic phrases like "passionate about", "think a lot about", "reaching out", "aligned with", "resonates", "inspired", "keen to", or "deeply appreciate"
-- The "Like you," sentence should appear in the first or second paragraph
+Target voice: warm, specific, slightly informal, confident without being pushy
+- Sound like a real person with a real story
+- Reference specifics (names, dates, projects, quotes) not abstractions
+- Use short sentences sometimes. Then a longer one. Rhythm matters.
 
-RESEARCH USAGE RULES:
-- If Hook Packs with "Like you" ingredients are provided, use them to craft your "Like you," line
-- Use facts as anchors for a parallel or question, not as praise or résumé summary
-- Do NOT summarize the recipient's career or list accomplishments
-- If facts are empty or no real research was found, do NOT imply you did research
-- If no researched facts exist, still create a "Like you," bridge using role/company context and the sender's story
-- IMPORTANT: Prioritize Hook Packs with high intent_fit scores—these align with what the sender is actually trying to accomplish
+GOOD "Like you," examples (study these):
+- "Like you, I've spent years trying to get capital to founders who don't look like the typical pitch deck."
+- "Like you, I think the hard part isn't the tech—it's getting ops teams to actually use it."
+- "Like you, I've run programs for people who didn't have a network handed to them."
+- "Like you, I learned that the messy middle of a 2-year deal is where it's really won."
 
-BANNED CLICHÉ PHRASES (never use these):
-- "i'm reaching out because" or "reaching out because"
-- "passionate about"
-- "would love to connect"
-- "keen interest"
-- "impact at scale"
-- "innovative solutions"
-- "extensive experience"
-- "impressed by"
-- "exceptional track record"
-- "exploring career paths"
+BAD "Like you," examples (NEVER write these):
+- "Like you, we share a commitment to fostering inclusive leadership opportunities." (too abstract, corporate)
+- "Like you, I'm passionate about driving impact in the technology space." (generic, buzzwordy)
+- "Like you, I believe in the importance of diverse perspectives." (platitude, says nothing specific)
+- "Like you, I've dedicated my career to innovation and growth." (resume-speak, hollow)
 
-STYLE RULES:
-- Vivid, concrete language
-- Simple, human tone
-- No em-dashes (—), no semicolons, no ellipses (... or …)
-- No MBA or corporate clichés
-- No generic praise or flattery
-- No bracket placeholders
-- End with "Best," and nothing after
+SHOW, DON'T TELL:
+- BAD: "Your experience leading partnerships demonstrated incredible vision"
+- GOOD: "The Activision deal took two years—that kind of patience is rare."
+
+- BAD: "Your thought leadership on inclusion deeply resonated with me"
+- GOOD: "Your Afrotech piece hit home, especially the stat about device access."
+
+- BAD: "I was impressed by your extensive experience in the industry"
+- GOOD: "I read about the McAfee spin-out—navigating Intel politics while running a company sounds brutal."
+
+HOW TO USE "Like you" INGREDIENTS:
+When given hook packs with "like_you_ingredients," use them as raw material—NOT a template to fill in.
+- shared_axis: the world you both care about
+- shared_action: what you both DO (not just believe)
+- shared_stakes: why it matters
+
+Blend these naturally. You might only use two of three. The goal is a sentence that sounds like YOU said it, not like you assembled it from parts.
+
+TEXTURE TIPS:
+- Reference something specific from research ("In that podcast with X...")
+- Ask a real question, not a rhetorical one
+- One-line paragraphs are fine. Use them for punch.
+- Don't explain who the recipient is to them. They know.
+
+LENGTH:
+The email should take 15-20 seconds to read. Shorter is better.
+If you can say it in 80 words, don't stretch to 120. Concise > complete.
+Target: 80-130 words. Absolute max: 150.
 
 STRUCTURE:
-- Subject line: short, specific, intriguing
-- Greeting with recipient's first name (e.g., "Hi John," or "John,")
-- 1–2 short paragraphs establishing the hook (include the "Like you," line early)
-- One small, specific ask
-- Sign-off: "Best," with nothing after
+- Subject: short, specific, intriguing (no clickbait)
+- Greeting: "Hi [FirstName]," or "[FirstName],"
+- Para 1: The hook. Include "Like you," early. Reference something specific.
+- Para 2 (optional): Your brief credibility. One sentence.
+- Para 3: One specific ask. Easy to answer.
+- Sign-off: "Best," (nothing after, no name)
 
-DO NOT EVER:
-- Invent private or sensitive information
-- Imply research you did not do
+HARD RULES (will cause rejection if violated):
+- "Like you," appears exactly once (capital L, comma after)
+- No em-dashes (—)
+- No bracket placeholders like [Name]
+- End with exactly "Best," and nothing after
+- No clichés: "passionate about", "would love to connect", "reaching out because", "impressive track record", "keen interest", "impact at scale"
+- No "As a fellow..." openers
+
+DO NOT:
+- Summarize their career/resume
 - Stack multiple personalization angles
-- Use "Like you," more than once
-- Include a name after the sign-off`;
+- Use formal/corporate voice
+- Invent information
+- Imply research you didn't do
+- Write anything you wouldn't text to a smart friend`;
 
 // ============= TYPES =============
 
@@ -193,6 +202,16 @@ const BANNED_CLICHES = [
   "impressed by",
   "exceptional track record",
   "exploring career paths",
+  "thought leadership",
+  "fostering",
+  "driving impact",
+  "deeply resonated",
+  "your incredible",
+  "your remarkable",
+  "your impressive",
+  "dedicated my career",
+  "share a commitment",
+  "believe in the importance",
 ];
 
 const GENERIC_LIKE_YOU_PATTERNS = [
@@ -204,6 +223,31 @@ const GENERIC_LIKE_YOU_PATTERNS = [
   "inspired",
   "keen to",
   "deeply appreciate",
+  "share a commitment",
+  "believe in",
+  "dedicated to",
+  "driving",
+  "fostering",
+  "cultivating",
+  "championing",
+];
+
+// Corporate padding detection patterns
+const CORPORATE_PADDING_PHRASES = [
+  "in the space",
+  "thought leader",
+  "synergy",
+  "leverage",
+  "ecosystem",
+  "holistic",
+  "paradigm",
+  "stakeholder",
+  "best practices",
+  "core competencies",
+  "value proposition",
+  "move the needle",
+  "circle back",
+  "take this offline",
 ];
 
 // ============= QUERY TEMPLATE LIBRARY (STABLE) =============
@@ -1399,11 +1443,38 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
   }
 
   const wordCount = countWords(body);
-  if (wordCount < 90) {
-    errors.push(`Body has ${wordCount} words (minimum 90 required)`);
+  if (wordCount < 60) {
+    errors.push(`Body has ${wordCount} words (minimum 60 required)`);
   }
-  if (wordCount > 170) {
-    errors.push(`Body has ${wordCount} words (maximum 170 allowed)`);
+  if (wordCount > 150) {
+    errors.push(`Body has ${wordCount} words (maximum 150 allowed—shorter is better)`);
+  }
+
+  // Check for corporate padding phrases
+  for (const phrase of CORPORATE_PADDING_PHRASES) {
+    if (combinedText.toLowerCase().includes(phrase)) {
+      errors.push(`Contains corporate padding phrase: "${phrase}"`);
+    }
+  }
+  
+  // Check for overly long sentences (sign of padding)
+  const sentences = body.split(/[.!?]+/).filter(s => s.trim().length > 0);
+  for (const sentence of sentences) {
+    const sentenceWords = countWords(sentence);
+    if (sentenceWords > 35) {
+      errors.push(`Contains a ${sentenceWords}-word sentence (max 35). Break it up.`);
+      break; // Only flag once
+    }
+  }
+
+  // Check for lack of concrete nouns (abstract padding detection)
+  const likeYouSentenceForAbstraction = extractSentenceWithLikeYou(body);
+  if (likeYouSentenceForAbstraction) {
+    // Flag if Like you sentence is too long (sign of corporate speak)
+    const likeYouWords = countWords(likeYouSentenceForAbstraction);
+    if (likeYouWords > 30) {
+      errors.push(`"Like you," sentence is ${likeYouWords} words (aim for under 25)`);
+    }
   }
 
   return {
@@ -1419,21 +1490,23 @@ function buildRetryInstruction(errors: string[]): string {
   const errorList = errors.map(e => `- ${e}`).join('\n');
   return `
 
-REWRITE REQUIRED — your previous output violated these rules:
+REWRITE REQUIRED — your previous output had issues:
 ${errorList}
 
-Rewrite the email to satisfy ALL rules.
+VOICE REMINDER (most important):
+- Write like you're texting a smart friend, not drafting a memo
+- The "Like you," line should be the most NATURAL sentence, not the most formal
+- Shorter is better. If it can be said in fewer words, do it.
+- Reference specific things (names, projects, numbers) not abstractions
 
-Critical fixes needed:
-- The body MUST include the exact phrase "Like you," (capital L, comma after) exactly once.
-- The sentence containing "Like you," must be specific and NOT include any banned generic phrases.
-- Do not use any banned clichés.
-- End with exactly "Best," and nothing after.
-- Word count must be between 90 and 170 words.
-- No bracket placeholders like [Name].
-- No em-dashes (—).
+HARD FIXES:
+- "Like you," must appear exactly once (capital L, comma after)
+- "Like you," sentence must be under 25 words and feel natural
+- Word count: 60-150 words (aim for 80-100)
+- End with just "Best," 
+- No em-dashes, no brackets, no corporate buzzwords
 
-Return ONLY valid JSON with keys "subject" and "body".`;
+Return ONLY valid JSON with "subject" and "body".`;
 }
 
 function getAskTypeLabel(askType: string): string {
@@ -1842,72 +1915,71 @@ SHARED AFFILIATION (user-declared, use ONLY as last resort for "Like you," conne
 IMPORTANT: Only use this shared affiliation if no stronger craft/problem/constraint parallel exists.`;
     }
 
-    // Build Hook Packs section with like_you_ingredients
+    // Build Hook Packs section with improved voice guidance
     let hookPacksSection = '';
     if (researchResult && researchResult.hookPacks.length > 0) {
+      // Sort by intent_fit and pick top 2-3 for cleaner context
+      const topHookPacks = [...researchResult.hookPacks]
+        .sort((a, b) => b.scores.intent_fit - a.scores.intent_fit)
+        .slice(0, 3);
+      
       hookPacksSection = `
-RESEARCHED HOOK PACKS (use these ingredients to craft the "Like you," bridge):
-${researchResult.hookPacks.map((hp, i) => `
-${i + 1}. CLAIM: ${hp.hook_fact.claim}
+RESEARCH FOUND (use to craft your "Like you," line):
+${topHookPacks.map((hp, i) => `
+${i + 1}. SPECIFIC FACT: ${hp.hook_fact.claim}
+   Evidence: "${hp.hook_fact.evidence}"
    Source: ${hp.hook_fact.source_url}
-   Evidence (${hp.hook_fact.evidence_type}): "${hp.hook_fact.evidence}"
    
-   "LIKE YOU" INGREDIENTS:
-   - Shared axis: ${hp.bridge.like_you_ingredients.shared_axis}
-   - Shared action: ${hp.bridge.like_you_ingredients.shared_action}
-   - Shared stakes: ${hp.bridge.like_you_ingredients.shared_stakes}
-   ${hp.bridge.like_you_ingredients.optional_phrases?.length ? `- Optional phrases: ${hp.bridge.like_you_ingredients.optional_phrases.join(', ')}` : ''}
+   RAW INGREDIENTS FOR "Like you,":
+   - What you both do: ${hp.bridge.like_you_ingredients.shared_action}
+   - The world you share: ${hp.bridge.like_you_ingredients.shared_axis}
+   - Why it matters: ${hp.bridge.like_you_ingredients.shared_stakes}
    
-   Bridge angle: ${hp.bridge.bridge_angle}
-   Intent theme: ${hp.bridge.intent_theme}
-   Why relevant: ${hp.bridge.why_relevant}
+   DRAFT (rewrite in your own voice, keep under 25 words):
+   "Like you, I [${hp.bridge.like_you_ingredients.shared_action}] because [${hp.bridge.like_you_ingredients.shared_stakes}]."
    
-   Scores: identity=${hp.scores.identity_conf.toFixed(2)}, intent_fit=${hp.scores.intent_fit.toFixed(2)}, non_generic=${hp.scores.non_generic.toFixed(2)}, overall=${hp.scores.overall.toFixed(2)}
+   Intent fit: ${(hp.scores.intent_fit * 100).toFixed(0)}%
 `).join('')}
 
-Use the "LIKE YOU" INGREDIENTS to craft a natural "Like you," sentence. Combine shared_axis, shared_action, and shared_stakes fluidly.
-PRIORITIZE Hook Packs with high intent_fit scores—these align with what the sender is actually trying to accomplish.`;
+INSTRUCTIONS:
+- Pick ONE hook pack (prefer highest intent fit)
+- Rewrite the draft "Like you," line to sound natural—like you'd text it
+- Reference the specific fact somewhere in the email (show you did homework)
+- Don't use all ingredients if it sounds forced. Less is more.`;
     } else {
       hookPacksSection = `
-NO RESEARCHED HOOK PACKS AVAILABLE.
-Create the "Like you," bridge using ONLY:
-- The sender's credibility story
-- The recipient's role and company context
-Do NOT imply you did specific research on the recipient.`;
+NO RESEARCH AVAILABLE.
+Create the "Like you," bridge from:
+- The sender's own story (below)
+- What someone in ${recipientRole} at ${recipientCompany} likely cares about
+Keep it real—don't pretend you found something you didn't.`;
     }
 
-    const userPrompt = `Generate a cold email with these details:
+    const userPrompt = `Write a cold email. Sound human.
 
-RECIPIENT:
-- Name: ${recipientName}
-- Role: ${recipientRole} at ${recipientCompany}
+TO: ${recipientFirstName} (${recipientRole} at ${recipientCompany})
 ${hookPacksSection}
 ${sharedAffiliationSection}
 
-SENDER'S CONTEXT:
-- Asking for: ${getAskTypeLabel(askType)}
-- Reason for reaching out: ${reachingOutBecause}
-- Credibility story: ${credibilityStory}
-${researchResult?.senderIntentProfile ? `- Primary theme: ${researchResult.senderIntentProfile.primary_theme}` : ''}
+FROM (the sender):
+- Wants: ${getAskTypeLabel(askType)}
+- Why reaching out: ${reachingOutBecause}
+- Their credibility: ${credibilityStory}
+${researchResult?.senderIntentProfile ? `- Theme: ${researchResult.senderIntentProfile.primary_theme}` : ''}
 
-CRITICAL INSTRUCTIONS:
-- The email MUST include the exact phrase "Like you," (capital L, comma after) exactly once in the body
-- The "Like you," sentence should appear in the first or second paragraph
-- Use the "Like you ingredients" to craft a natural sentence, don't force all components
-- Priority for "Like you," bridge: craft/experience > problem space > constraints > shared institution
-- Make a specific ask related to "${getAskTypeLabel(askType)}"
-- Keep the body between 90-170 words
-- Greeting must be "Hi ${recipientFirstName}," or "${recipientFirstName},"
-- End with exactly "Best," and nothing after
-- No bracket placeholders, no em-dashes
+REMEMBER:
+- Include "Like you," exactly once (capital L, comma)
+- Put the "Like you," line in paragraph 1 or 2
+- Keep it SHORT: 80-130 words ideal, 150 max
+- One clear ask at the end
+- End with just "Best," (no name after)
+- No em-dashes, no brackets, no corporate speak
 
-Return your response in this exact JSON format:
+Return JSON only:
 {
-  "subject": "Your subject line here",
-  "body": "Your full email body here with proper line breaks"
-}
-
-Only return the JSON, no other text.`;
+  "subject": "...",
+  "body": "..."
+}`;
 
     // Generate email with validation and retry logic
     let rawResponse: string;
