@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Play, CheckCircle, XCircle, AlertTriangle, Download } from 'lucide-react';
+import { Loader2, Play, CheckCircle, XCircle, AlertTriangle, Download, ExternalLink, RefreshCw } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,16 +10,17 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
 import { TEST_CASES, TestCase } from '@/testCases';
-import type { EmailResponse } from '@/lib/prompt';
+import type { ResearchedEmailResponse, HookFact } from '@/lib/prompt';
 
 interface TestResult {
   testCase: TestCase;
-  response: (EmailResponse & { researchedFacts?: string[] }) | null;
+  response: ResearchedEmailResponse | null;
   error: string | null;
   metrics: {
     wordCount: number;
     hasEmDash: boolean;
     hasCliches: string[];
+    likeYouCount: number;
   } | null;
 }
 
@@ -39,12 +40,18 @@ const FORBIDDEN_CLICHES = [
   'paradigm shift',
 ];
 
-function analyzeEmail(body: string): { wordCount: number; hasEmDash: boolean; hasCliches: string[] } {
+function countLikeYou(body: string): number {
+  const matches = body.match(/Like you,/g);
+  return matches ? matches.length : 0;
+}
+
+function analyzeEmail(body: string): { wordCount: number; hasEmDash: boolean; hasCliches: string[]; likeYouCount: number } {
   const wordCount = body.split(/\s+/).filter(Boolean).length;
   const hasEmDash = body.includes('—') || body.includes('--');
   const lowerBody = body.toLowerCase();
   const hasCliches = FORBIDDEN_CLICHES.filter(cliche => lowerBody.includes(cliche.toLowerCase()));
-  return { wordCount, hasEmDash, hasCliches };
+  const likeYouCount = countLikeYou(body);
+  return { wordCount, hasEmDash, hasCliches, likeYouCount };
 }
 
 function getAskTypeLabel(askType: string): string {
@@ -129,11 +136,24 @@ export default function TestHarness() {
       askType: r.testCase.askType,
       subject: r.response?.subject || null,
       body: r.response?.body || null,
+      // V2 Research data
+      exaQueries: r.response?.exaQueries || [],
+      exaResults: r.response?.exaResults || [],
+      selectedSources: r.response?.selectedSources || [],
+      hookFacts: r.response?.hookFacts || [],
+      // Enforcement
+      enforcementResults: r.response?.enforcementResults || null,
+      // Legacy
       researchedFacts: r.response?.researchedFacts || [],
+      // Metrics
       error: r.error,
       wordCount: r.metrics?.wordCount || null,
+      likeYouCount: r.metrics?.likeYouCount || 0,
       hasEmDash: r.metrics?.hasEmDash || false,
       clichesFound: r.metrics?.hasCliches || [],
+      validatorPassed: r.response?.validatorPassed || false,
+      validatorErrors: r.response?.validatorErrors || [],
+      retryUsed: r.response?.retryUsed || false,
     }));
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -145,7 +165,7 @@ export default function TestHarness() {
   };
 
   const exportAsCSV = () => {
-    const headers = ['ID', 'Label', 'Recipient', 'Ask Type', 'Subject', 'Body', 'Researched Facts', 'Error', 'Word Count', 'Has Em-Dash', 'Clichés Found'];
+    const headers = ['ID', 'Label', 'Recipient', 'Ask Type', 'Subject', 'Body', 'Hook Facts', 'Retry Used', 'Validator Passed', 'Error', 'Word Count', 'Like You Count', 'Has Em-Dash', 'Clichés Found'];
     const rows = results.map(r => [
       r.testCase.id.toString(),
       r.testCase.label,
@@ -153,9 +173,12 @@ export default function TestHarness() {
       r.testCase.askType,
       r.response?.subject || '',
       r.response?.body?.replace(/\n/g, '\\n').replace(/"/g, '""') || '',
-      r.response?.researchedFacts?.join(' | ') || '',
+      r.response?.hookFacts?.map(f => f.claim).join(' | ') || '',
+      r.response?.retryUsed ? 'Yes' : 'No',
+      r.response?.validatorPassed ? 'Yes' : 'No',
       r.error || '',
       r.metrics?.wordCount?.toString() || '',
+      r.metrics?.likeYouCount?.toString() || '0',
       r.metrics?.hasEmDash ? 'Yes' : 'No',
       r.metrics?.hasCliches?.join('; ') || '',
     ]);
@@ -172,6 +195,26 @@ export default function TestHarness() {
     URL.revokeObjectURL(url);
   };
 
+  const HookFactDisplay = ({ fact }: { fact: HookFact }) => (
+    <div className="bg-primary/5 border border-primary/20 rounded-md p-3 text-sm space-y-1">
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-medium text-foreground">{fact.claim}</p>
+        <Badge variant="outline" className="text-xs shrink-0">
+          {fact.bridge_type} • {fact.hook_score}/5
+        </Badge>
+      </div>
+      <p className="text-muted-foreground italic">"{fact.evidence_quote}"</p>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <a href={fact.source_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline flex items-center gap-1">
+          <ExternalLink className="h-3 w-3" />
+          Source
+        </a>
+        <span>•</span>
+        <span>{fact.why_relevant}</span>
+      </div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container max-w-5xl py-8 px-4">
@@ -182,10 +225,9 @@ export default function TestHarness() {
               Internal Testing Only
             </Badge>
           </div>
-          <h1 className="text-3xl font-bold text-foreground mb-2">Email Generator Test Harness</h1>
+          <h1 className="text-3xl font-bold text-foreground mb-2">Email Generator Test Harness (V2)</h1>
           <p className="text-muted-foreground">
-            This page runs {TEST_CASES.length} predefined scenarios through the research-based email generator. 
-            Each test researches the recipient via their public link before generating the email.
+            This page runs {TEST_CASES.length} predefined scenarios through the V2 research-based email generator with Exa integration and "Like you," enforcement.
           </p>
         </header>
 
@@ -248,21 +290,26 @@ export default function TestHarness() {
                     </div>
                     {result.metrics && (
                       <div className="flex gap-2 flex-wrap justify-end">
-                        <Badge variant={result.metrics.wordCount <= 200 ? 'default' : 'destructive'}>
+                        <Badge variant={result.metrics.wordCount >= 90 && result.metrics.wordCount <= 170 ? 'default' : 'destructive'}>
                           {result.metrics.wordCount} words
                         </Badge>
-                        <Badge variant={result.metrics.hasEmDash ? 'destructive' : 'default'}>
-                          {result.metrics.hasEmDash ? (
-                            <><XCircle className="h-3 w-3 mr-1" /> Em-dash</>
+                        <Badge variant={result.metrics.likeYouCount === 1 ? 'default' : 'destructive'}>
+                          {result.metrics.likeYouCount === 1 ? (
+                            <><CheckCircle className="h-3 w-3 mr-1" /> "Like you,"</>
                           ) : (
-                            <><CheckCircle className="h-3 w-3 mr-1" /> No em-dash</>
+                            <><XCircle className="h-3 w-3 mr-1" /> {result.metrics.likeYouCount}x "Like you,"</>
                           )}
                         </Badge>
-                        <Badge variant={result.metrics.hasCliches.length > 0 ? 'destructive' : 'default'}>
-                          {result.metrics.hasCliches.length > 0 ? (
-                            <><XCircle className="h-3 w-3 mr-1" /> {result.metrics.hasCliches.length} clichés</>
+                        {result.response?.retryUsed && (
+                          <Badge variant="secondary">
+                            <RefreshCw className="h-3 w-3 mr-1" /> Retry
+                          </Badge>
+                        )}
+                        <Badge variant={result.response?.validatorPassed ? 'default' : 'destructive'}>
+                          {result.response?.validatorPassed ? (
+                            <><CheckCircle className="h-3 w-3 mr-1" /> Valid</>
                           ) : (
-                            <><CheckCircle className="h-3 w-3 mr-1" /> No clichés</>
+                            <><XCircle className="h-3 w-3 mr-1" /> Invalid</>
                           )}
                         </Badge>
                       </div>
@@ -277,21 +324,99 @@ export default function TestHarness() {
                     </div>
                   ) : result.response ? (
                     <div className="space-y-4">
-                      {result.response.researchedFacts && result.response.researchedFacts.length > 0 && (
-                        <div>
-                          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Researched Facts Used</p>
-                          <div className="bg-primary/5 border border-primary/20 rounded-md p-3">
-                            <ul className="text-sm text-foreground/80 space-y-1">
-                              {result.response.researchedFacts.map((fact, i) => (
-                                <li key={i} className="flex gap-2">
-                                  <span className="text-primary font-medium">{i + 1}.</span>
-                                  <span>{fact}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
+                      {/* Research Results */}
+                      <details className="group">
+                        <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground flex items-center gap-2">
+                          <span>Research Details</span>
+                          <Badge variant="outline" className="text-xs">
+                            {result.response.hookFacts?.length || 0} hook facts
+                          </Badge>
+                          {result.response.exaResults && result.response.exaResults.length > 0 && (
+                            <Badge variant="outline" className="text-xs">
+                              {result.response.exaResults.length} Exa results
+                            </Badge>
+                          )}
+                        </summary>
+                        <div className="mt-3 space-y-3">
+                          {/* Exa Queries */}
+                          {result.response.exaQueries && result.response.exaQueries.length > 0 && (
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Exa Queries</p>
+                              <div className="bg-muted/30 rounded-md p-2 text-xs space-y-1">
+                                {result.response.exaQueries.map((q, i) => (
+                                  <p key={i} className="font-mono text-foreground/80">{i + 1}. {q}</p>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* Selected Sources */}
+                          {result.response.selectedSources && result.response.selectedSources.length > 0 && (
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Selected Sources for Extraction</p>
+                              <div className="bg-muted/30 rounded-md p-2 text-xs space-y-1">
+                                {result.response.selectedSources.map((url, i) => (
+                                  <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block text-primary hover:underline truncate">
+                                    {url}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* Hook Facts */}
+                          {result.response.hookFacts && result.response.hookFacts.length > 0 ? (
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Hook Facts</p>
+                              <div className="space-y-2">
+                                {result.response.hookFacts.map((fact, i) => (
+                                  <HookFactDisplay key={i} fact={fact} />
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground italic">No hook facts extracted (email generated without specific research)</p>
+                          )}
                         </div>
+                      </details>
+
+                      {/* Enforcement Results */}
+                      {result.response.enforcementResults && (result.response.enforcementResults.failures_first_pass.length > 0 || result.response.enforcementResults.did_retry) && (
+                        <details className="group">
+                          <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground flex items-center gap-2">
+                            <span>Enforcement Details</span>
+                            {result.response.enforcementResults.did_retry && (
+                              <Badge variant="secondary" className="text-xs">
+                                <RefreshCw className="h-3 w-3 mr-1" /> Retry used
+                              </Badge>
+                            )}
+                          </summary>
+                          <div className="mt-3 space-y-2">
+                            {result.response.enforcementResults.failures_first_pass.length > 0 && (
+                              <div>
+                                <p className="text-xs uppercase tracking-wide text-amber-600 mb-1">First Pass Failures</p>
+                                <ul className="bg-amber-500/10 border border-amber-500/20 rounded-md p-2 text-xs space-y-1">
+                                  {result.response.enforcementResults.failures_first_pass.map((f, i) => (
+                                    <li key={i} className="text-amber-700">{f}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {result.response.enforcementResults.failures_retry.length > 0 && (
+                              <div>
+                                <p className="text-xs uppercase tracking-wide text-destructive mb-1">Retry Failures (Still Present)</p>
+                                <ul className="bg-destructive/10 border border-destructive/20 rounded-md p-2 text-xs space-y-1">
+                                  {result.response.enforcementResults.failures_retry.map((f, i) => (
+                                    <li key={i} className="text-destructive">{f}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        </details>
                       )}
+
+                      {/* Email Output */}
                       <div>
                         <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Subject</p>
                         <p className="font-medium text-foreground">{result.response.subject}</p>
@@ -302,6 +427,20 @@ export default function TestHarness() {
                           {result.response.body}
                         </div>
                       </div>
+
+                      {/* Validation Errors (if any remain) */}
+                      {result.response.validatorErrors && result.response.validatorErrors.length > 0 && (
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-destructive mb-1">Validation Errors</p>
+                          <ul className="bg-destructive/10 rounded-md p-2 text-xs space-y-1">
+                            {result.response.validatorErrors.map((err, i) => (
+                              <li key={i} className="text-destructive">{err}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Detected Clichés */}
                       {result.metrics && result.metrics.hasCliches.length > 0 && (
                         <div>
                           <p className="text-xs uppercase tracking-wide text-destructive mb-1">Detected Clichés</p>
@@ -340,7 +479,7 @@ export default function TestHarness() {
         {results.length === 0 && !isRunning && (
           <div className="text-center py-16 text-muted-foreground">
             <p>Click "Run All Tests" to generate emails for all {TEST_CASES.length} test scenarios.</p>
-            <p className="text-sm mt-2">Each test will research the recipient before generating the email.</p>
+            <p className="text-sm mt-2">Each test will use Exa to research the recipient before generating the email with "Like you," enforcement.</p>
           </div>
         )}
       </div>
