@@ -19,13 +19,20 @@ export type Database = {
           body: string
           cliche_count: number | null
           created_at: string
+          enforcement_results: Json | null
+          exa_queries: Json | null
+          exa_results: Json | null
           has_em_dash: boolean | null
           id: string
           input_json: Json
           latency_ms: number | null
+          like_you_count: number | null
           model_name: string
           prompt_version: string
+          research_model_name: string | null
+          researched_facts: Json | null
           scenario_name: string | null
+          selected_sources: Json | null
           session_id: string | null
           source: string
           subject: string | null
@@ -38,13 +45,20 @@ export type Database = {
           body: string
           cliche_count?: number | null
           created_at?: string
+          enforcement_results?: Json | null
+          exa_queries?: Json | null
+          exa_results?: Json | null
           has_em_dash?: boolean | null
           id?: string
           input_json: Json
           latency_ms?: number | null
+          like_you_count?: number | null
           model_name: string
           prompt_version: string
+          research_model_name?: string | null
+          researched_facts?: Json | null
           scenario_name?: string | null
+          selected_sources?: Json | null
           session_id?: string | null
           source?: string
           subject?: string | null
@@ -57,13 +71,20 @@ export type Database = {
           body?: string
           cliche_count?: number | null
           created_at?: string
+          enforcement_results?: Json | null
+          exa_queries?: Json | null
+          exa_results?: Json | null
           has_em_dash?: boolean | null
           id?: string
           input_json?: Json
           latency_ms?: number | null
+          like_you_count?: number | null
           model_name?: string
           prompt_version?: string
+          research_model_name?: string | null
+          researched_facts?: Json | null
           scenario_name?: string | null
+          selected_sources?: Json | null
           session_id?: string | null
           source?: string
           subject?: string | null
