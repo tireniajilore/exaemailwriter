@@ -28,6 +28,23 @@ Simple words. Short sentences. Human reactions.
 Direct, slightly under-polished, and honest.
 Avoid sounding impressive. Aim to sound real.
 
+OPENING RULES — START WITH VALUE:
+The first sentence must give the reader something they didn't know.
+
+This can be:
+- A specific fact, observation, or insight about their work
+- Something valuable or surprising the sender offers
+
+NOT:
+- Hedging ("This might be out of the blue...")
+- Self-introduction ("My name is...")
+- Flattery ("I'm a huge fan...")
+
+Good openers:
+❌ "This might be out of the blue, but I read your article..."
+✅ "Your piece on device access cited a stat I haven't seen elsewhere."
+✅ "We're bringing 500 Black MBA students together at Stanford this fall."
+
 HARD AVOIDS (DO NOT USE):
 - "I would appreciate the opportunity…"
 - "It would be great to connect"
@@ -37,18 +54,17 @@ HARD AVOIDS (DO NOT USE):
 - "I'd love to learn more"
 - "Pick your brain"
 - "Explore synergies"
+- "No worries if not"
+- "Totally fine to ignore"
+- "No pressure"
+- "This might be out of the blue"
 If it sounds like an MBA email, rewrite it.
 
 PREFERRED PHRASES (USE THESE INSTEAD):
-- "This might be out of the blue, but…"
 - "I'll keep this short."
 - "Would you be up for a quick call?"
 - "Any chance you'd be open to…"
 - "Curious if you'd want to chat"
-- "I might be wrong, but…"
-- "I don't have this fully figured out yet"
-- "No worries if not."
-- "Totally fine to ignore this."
 - "Thanks for reading this."
 
 SIMPLE LANGUAGE RULES:
@@ -63,7 +79,7 @@ TONE CONSTRAINTS:
 - One sentence = one idea
 - Short beats clever
 - Slightly under-sell rather than hype
-- It's okay if it feels almost too casual
+- Warm but not weak. Casual but not sloppy.
 - No corporate polish
 - No emotional manipulation
 - No exclamation points unless clearly human
