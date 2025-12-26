@@ -361,6 +361,29 @@ const ROBOTIC_VOICE_PATTERNS = [
 
 // ============= QUERY TEMPLATE LIBRARY (STABLE) =============
 
+// ============= RATE-LIMITED BATCH HELPER =============
+
+async function batchWithRateLimit<T>(
+  tasks: (() => Promise<T>)[],
+  batchSize: number = 4,  // Stay under 5/sec Exa limit
+  delayMs: number = 250   // 250ms between batches
+): Promise<T[]> {
+  const results: T[] = [];
+  
+  for (let i = 0; i < tasks.length; i += batchSize) {
+    const batch = tasks.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(fn => fn()));
+    results.push(...batchResults);
+    
+    // Add delay between batches (except after the last one)
+    if (i + batchSize < tasks.length) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  
+  return results;
+}
+
 const TEMPLATE_LIBRARY = {
   identity: [
     `"{name}" "{company}" bio`,
@@ -797,19 +820,20 @@ async function discoverCandidatesV2(
     }
   }
   
-  // ============= RUN LANE A + B IN PARALLEL =============
+  // ============= RUN LANE A + B WITH RATE LIMITING =============
   const allLaneABQueries = [...laneAQueries, ...laneBQueries];
   queriesUsed.push(...allLaneABQueries);
   
   const t1 = Date.now();
-  console.log(`Running ${allLaneABQueries.length} Lane A+B queries in parallel`);
+  console.log(`Running ${allLaneABQueries.length} Lane A+B queries with rate limiting`);
   
-  const laneABPromises = allLaneABQueries.map((q, i) => 
-    exaSearchWithContent(q, exaApiKey, i < 2 ? 5 : 8) // Lane A gets 5, Lane B gets 8
+  // Create task functions for batching
+  const laneABTasks = allLaneABQueries.map((q, i) => 
+    () => exaSearchWithContent(q, exaApiKey, i < 2 ? 5 : 8) // Lane A gets 5, Lane B gets 8
   );
-  const laneABResults = await Promise.all(laneABPromises);
+  const laneABResults = await batchWithRateLimit(laneABTasks, 4, 250);
   
-  console.log(`Lane A+B parallel queries completed in ${Date.now() - t1}ms`);
+  console.log(`Lane A+B rate-limited queries completed in ${Date.now() - t1}ms`);
   
   for (const results of laneABResults) {
     for (const r of results) {
@@ -857,12 +881,13 @@ async function discoverCandidatesV2(
     queriesUsed.push(...laneCQueries);
     
     const t2 = Date.now();
-    console.log(`Running ${laneCQueries.length} Lane C queries in parallel`);
+    console.log(`Running ${laneCQueries.length} Lane C queries with rate limiting`);
     
-    const laneCPromises = laneCQueries.map(q => exaSearchWithContent(q, exaApiKey, 6));
-    const laneCResults = await Promise.all(laneCPromises);
+    // Create task functions for batching
+    const laneCTasks = laneCQueries.map(q => () => exaSearchWithContent(q, exaApiKey, 6));
+    const laneCResults = await batchWithRateLimit(laneCTasks, 4, 250);
     
-    console.log(`Lane C parallel queries completed in ${Date.now() - t2}ms`);
+    console.log(`Lane C rate-limited queries completed in ${Date.now() - t2}ms`);
     
     for (const results of laneCResults) {
       for (const r of results) {
