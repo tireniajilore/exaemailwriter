@@ -32,21 +32,30 @@ OPENING RULES — START WITH SENDER-SIDE NEWS:
 The FIRST sentence after the greeting must contain NEW INFORMATION. 
 Default to SENDER-SIDE news: your event, your ask, your offer, your product.
 
+SENDER-SIDE NEWS = What you're DOING or OFFERING (allowed as first sentence):
+✅ "Stanford's Black Business Conference is back in October."
+✅ "We're building a payments tool for Latin America."
+✅ "I have a two-minute proof-of-concept for an underdog film."
+✅ "The stat in your Afrotech piece—40% lack a device—stuck with me." (the detail itself)
+
+NOT who you ARE (save for credibility paragraph, NOT first sentence):
+❌ "I'm a VC Fellow at PayPal Ventures..."
+❌ "I just finished my MBA..."
+❌ "I'm working on a short film..."
+❌ "My name is X and I'm a..."
+❌ "I'm a PhD student at..."
+
 BANNED FIRST-SENTENCE OPENERS (will cause rejection):
 ❌ Discovery openers: "I read...", "I saw...", "I came across...", "I found...", "I noticed..."
 ❌ Meta openers: "I'll keep this short.", "Quick question.", "Quick note.", "Random question."
 ❌ Reach-out openers: "I wanted to reach out...", "Reaching out because...", "I'm writing because..."
+❌ Self-intro openers: "I'm a...", "I'm an...", "My name is...", "I just finished...", "I'm working on..."
 ❌ Hedging: "This might be out of the blue..."
 ❌ Flattery: "I'm a huge fan...", "I've long admired..."
 
-WHY: "I saw your article" tells them nothing new—they know they wrote it.
+WHY: "I saw your article" tells them nothing new. "I'm a VC Fellow" tells them who you are, not what you're offering.
 
-ALLOWED FIRST SENTENCES:
-✅ "Stanford's Black Business Conference is back in October—500 Black MBAs in the room." (sender-side news)
-✅ "The stat in your Afrotech piece—40% of Black households lack a device—stuck with me." (recipient's work: the DETAIL itself, not "I read")
-✅ "We're building a tool that does X, and your team at Y came up." (sender-side + reason)
-
-RULE: If you mention their work, lead with the SPECIFIC DETAIL, not the act of reading it.
+RULE: First sentence = what you're DOING/OFFERING or a SPECIFIC DETAIL from their work. Save credentials for paragraph 2.
 
 HARD AVOIDS (DO NOT USE):
 - "I would appreciate the opportunity…"
@@ -725,7 +734,7 @@ function scoreSnippetForIntent(
   ).length;
   score -= Math.min(0.3, avoidHits * 0.1);
   
-  return Math.max(0, Math.min(1, score + 0.3)); // baseline 0.3, clamp to 0-1
+  return Math.max(0, Math.min(1, score + 0.4)); // baseline 0.4, clamp to 0-1
 }
 
 async function discoverCandidatesV2(
@@ -1224,7 +1233,7 @@ const SUFFICIENCY_THRESHOLDS = {
   MIN_USABLE_HOOKPACKS: 2,
   MIN_INTENT_FIT: 0.70,
   MIN_PROMISING_CANDIDATES: 3,
-  PROMISING_CANDIDATE_THRESHOLD: 0.50,
+  PROMISING_CANDIDATE_THRESHOLD: 0.35,
 };
 
 // Evidence types that count as "pointable"
@@ -1599,6 +1608,7 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     
     // Banned opening patterns (discovery openers)
     const BANNED_OPENING_PATTERNS = [
+      // Discovery openers
       /^i read\b/,
       /^i saw\b/,
       /^i came across\b/,
@@ -1608,25 +1618,58 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
       /^i discovered\b/,
       /^i was reading\b/,
       /^i was looking\b/,
+      // Reach-out openers
       /^i wanted to reach out\b/,
       /^reaching out\b/,
       /^i'm reaching out\b/,
       /^i'm writing\b/,
+      // Meta openers
       /^i'll keep this short\b/,
       /^quick question\b/,
       /^quick note\b/,
       /^random question\b/,
+      // Hedging/flattery
       /^this might be out of the blue\b/,
       /^i'm a huge fan\b/,
       /^i've long admired\b/,
       /^i've been following\b/,
+      // Self-intro openers (banned as first sentence)
+      /^i'm a\b/,
+      /^i am a\b/,
+      /^i'm an\b/,
+      /^i am an\b/,
+      /^my name is\b/,
+      /^i work at\b/,
+      /^i work as\b/,
+      /^i just finished\b/,
+      /^i'm working on\b/,
+      /^i'm building\b/,
+      /^i'm currently\b/,
     ];
     
-    for (const pattern of BANNED_OPENING_PATTERNS) {
+    // Check for self-intro pattern (different error message)
+    const SELF_INTRO_PATTERNS = [
+      /^i'm a\b/, /^i am a\b/, /^i'm an\b/, /^i am an\b/,
+      /^my name is\b/, /^i work at\b/, /^i work as\b/,
+      /^i just finished\b/, /^i'm working on\b/, /^i'm building\b/, /^i'm currently\b/,
+    ];
+    
+    let foundBanned = false;
+    for (const pattern of SELF_INTRO_PATTERNS) {
       if (pattern.test(firstSentence)) {
-        const patternText = pattern.toString().replace(/^\/\^|\\b\/$/g, '').replace(/\\/g, '');
-        errors.push(`Opening sentence starts with "${patternText}..." — lead with sender-side news or a specific detail, not the act of reading/reaching out`);
+        errors.push(`Opening sentence is self-intro — lead with what you're OFFERING (event/product/ask), not who you ARE. Save credentials for paragraph 2.`);
+        foundBanned = true;
         break;
+      }
+    }
+    
+    if (!foundBanned) {
+      for (const pattern of BANNED_OPENING_PATTERNS) {
+        if (pattern.test(firstSentence)) {
+          const patternText = pattern.toString().replace(/^\/\^|\\b\/$/g, '').replace(/\\/g, '');
+          errors.push(`Opening sentence starts with "${patternText}..." — lead with sender-side news or a specific detail, not the act of reading/reaching out`);
+          break;
+        }
       }
     }
   }
@@ -1672,13 +1715,37 @@ ${badPhrase ? `\nTHE PHRASE "${badPhrase}" MUST NOT APPEAR IN YOUR OUTPUT.` : ''
     openingGuidance = `
 CRITICAL - OPENING SENTENCE FIX:
 DO NOT START WITH: "I read...", "I saw...", "I'll keep this short", "Quick question", "I wanted to reach out"
+DO NOT START WITH: "I'm a...", "I'm an...", "I just finished...", "I'm working on...", "My name is..."
 
-YOUR FIRST SENTENCE MUST BE SENDER-SIDE NEWS:
-✅ "Stanford's Black Business Conference is back in October—we'll have 500 Black MBAs there."
-✅ "We're building X and looking for advisors who've done Y."
-✅ "The stat in your Afrotech piece—40% lack a device—stuck with me." (the detail, not "I read")
+YOUR FIRST SENTENCE MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
+❌ "I'm a VC Fellow at PayPal Ventures..." 
+✅ "PayPal Ventures is deepening its gig economy thesis in LATAM."
 
-Lead with what YOU offer or a SPECIFIC detail from their work—not the act of reading it.
+❌ "I'm working on a short film about underdogs..."
+✅ "I have a two-minute proof-of-concept for an underdog film."
+
+❌ "I just finished my MBA..."
+✅ "I'm at a crossroads figuring out how to be most effective in climate work."
+
+Lead with the OFFER/EVENT/ASK or a SPECIFIC DETAIL from their work. Save your credentials for paragraph 2.
+`;
+  }
+  
+  // Check for self-intro specific error
+  const selfIntroError = errors.find(e => e.includes('self-intro') || e.includes('who you ARE'));
+  if (selfIntroError && !openingError) {
+    openingGuidance = `
+CRITICAL - SELF-INTRO OPENING FIX:
+DO NOT START WITH: "I'm a...", "I just finished...", "I'm working on...", "My name is..."
+
+YOUR FIRST SENTENCE MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
+❌ "I'm a VC Fellow at PayPal Ventures..." 
+✅ "PayPal Ventures is deepening its gig economy thesis in LATAM."
+
+❌ "I'm working on a short film about underdogs..."
+✅ "I have a two-minute proof-of-concept for an underdog film."
+
+Lead with the OFFER/EVENT/ASK. Save your credentials for paragraph 2.
 `;
   }
 
