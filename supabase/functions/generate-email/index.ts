@@ -744,10 +744,10 @@ async function discoverCandidatesV2(
   intentProfile: SenderIntentProfile,
   exaApiKey: string
 ): Promise<{ candidates: ExaResult[]; queriesUsed: string[]; scoredCandidates: { url: string; intent_fit: number; identity_match: boolean }[] }> {
+  const t0 = Date.now();
   console.log('=== Stage 3: Iterative Candidate Discovery V2 ===');
   
   const MAX_QUERIES = 12;
-  const BATCH_SIZE = 4;
   const MIN_HIGH_INTENT_CANDIDATES = 4;
   
   const queriesUsed: string[] = [];
@@ -763,51 +763,59 @@ async function discoverCandidatesV2(
   // Collect all keywords from hypotheses + intent profile
   const primaryKeywords = intentProfile.must_include_terms.slice(0, 6);
   const hypothesisKeywords = hypotheses.flatMap(h => h.keywords.slice(0, 4));
-  const allKeywords = [...new Set([...primaryKeywords, ...hypothesisKeywords])];
   
-  // ============= LANE A: Identity queries (2 queries) =============
-  console.log('Lane A: Identity queries');
+  // ============= LANE A: Identity queries (2 queries) - PARALLEL =============
+  console.log('Lane A: Identity queries (parallel)');
+  const laneAQueries: string[] = [];
   for (const template of TEMPLATE_LIBRARY.identity) {
-    if (queriesUsed.length >= 2) break;
+    if (laneAQueries.length >= 2) break;
     let query = template
       .replace('{name}', recipientName)
       .replace('{company}', fingerprint.company)
       .replace('{role}', fingerprint.role_keywords[0] || '');
     if (negations) query = `${query} ${negations}`;
-    
-    queriesUsed.push(query);
-    const results = await exaSearchWithContent(query, exaApiKey, 5);
-    for (const r of results) {
-      if (!seenUrls.has(r.url)) {
-        seenUrls.add(r.url);
-        allResults.push(r);
-      }
-    }
+    laneAQueries.push(query);
   }
   
-  // ============= LANE B: Primary intent theme queries (4-6 queries) =============
-  console.log('Lane B: Primary intent theme queries');
+  // ============= LANE B: Primary intent theme queries (4-6 queries) - BUILD =============
+  console.log('Lane B: Building primary intent theme queries');
   const laneB_templates = ['interview', 'speech', 'initiative'] as const;
+  const laneBQueries: string[] = [];
   let laneBCount = 0;
   
   for (const templateType of laneB_templates) {
-    if (queriesUsed.length >= 8 || laneBCount >= 4) break;
+    if (laneBQueries.length >= 6 || laneBCount >= 4) break;
     
     const keywordsForType = primaryKeywords.slice(laneBCount, laneBCount + 2);
     const queries = buildQueriesFromTemplates(recipientName, fingerprint.company, keywordsForType, templateType, 2);
     
     for (const query of queries) {
-      if (queriesUsed.length >= 8) break;
+      if (laneBQueries.length >= 6) break;
       let finalQuery = negations ? `${query} ${negations}` : query;
-      queriesUsed.push(finalQuery);
+      laneBQueries.push(finalQuery);
       laneBCount++;
-      
-      const results = await exaSearchWithContent(finalQuery, exaApiKey, 8);
-      for (const r of results) {
-        if (!seenUrls.has(r.url)) {
-          seenUrls.add(r.url);
-          allResults.push(r);
-        }
+    }
+  }
+  
+  // ============= RUN LANE A + B IN PARALLEL =============
+  const allLaneABQueries = [...laneAQueries, ...laneBQueries];
+  queriesUsed.push(...allLaneABQueries);
+  
+  const t1 = Date.now();
+  console.log(`Running ${allLaneABQueries.length} Lane A+B queries in parallel`);
+  
+  const laneABPromises = allLaneABQueries.map((q, i) => 
+    exaSearchWithContent(q, exaApiKey, i < 2 ? 5 : 8) // Lane A gets 5, Lane B gets 8
+  );
+  const laneABResults = await Promise.all(laneABPromises);
+  
+  console.log(`Lane A+B parallel queries completed in ${Date.now() - t1}ms`);
+  
+  for (const results of laneABResults) {
+    for (const r of results) {
+      if (!seenUrls.has(r.url)) {
+        seenUrls.add(r.url);
+        allResults.push(r);
       }
     }
   }
@@ -824,25 +832,39 @@ async function discoverCandidatesV2(
   
   // Early stop if we have enough
   if (highIntentCount >= MIN_HIGH_INTENT_CANDIDATES) {
-    console.log('Early stop: enough high-intent candidates');
+    console.log(`Early stop: enough high-intent candidates. Stage 3 completed in ${Date.now() - t0}ms`);
     return { candidates: allResults, queriesUsed, scoredCandidates };
   }
   
-  // ============= LANE C: Secondary/hypothesis queries (2-4 more) =============
-  console.log('Lane C: Secondary theme queries');
+  // ============= LANE C: Secondary/hypothesis queries (2-4 more) - PARALLEL =============
+  console.log('Lane C: Secondary theme queries (parallel)');
   const laneC_templates = ['written', 'general'] as const;
+  const laneCQueries: string[] = [];
   
   for (const templateType of laneC_templates) {
-    if (queriesUsed.length >= MAX_QUERIES) break;
+    if (queriesUsed.length + laneCQueries.length >= MAX_QUERIES) break;
     
     const queries = buildQueriesFromTemplates(recipientName, fingerprint.company, hypothesisKeywords.slice(0, 3), templateType, 2);
     
     for (const query of queries) {
-      if (queriesUsed.length >= MAX_QUERIES) break;
+      if (queriesUsed.length + laneCQueries.length >= MAX_QUERIES) break;
       let finalQuery = negations ? `${query} ${negations}` : query;
-      queriesUsed.push(finalQuery);
-      
-      const results = await exaSearchWithContent(finalQuery, exaApiKey, 6);
+      laneCQueries.push(finalQuery);
+    }
+  }
+  
+  if (laneCQueries.length > 0) {
+    queriesUsed.push(...laneCQueries);
+    
+    const t2 = Date.now();
+    console.log(`Running ${laneCQueries.length} Lane C queries in parallel`);
+    
+    const laneCPromises = laneCQueries.map(q => exaSearchWithContent(q, exaApiKey, 6));
+    const laneCResults = await Promise.all(laneCPromises);
+    
+    console.log(`Lane C parallel queries completed in ${Date.now() - t2}ms`);
+    
+    for (const results of laneCResults) {
       for (const r of results) {
         if (!seenUrls.has(r.url)) {
           seenUrls.add(r.url);
@@ -859,7 +881,7 @@ async function discoverCandidatesV2(
     identity_match: checkQuickIdentityMatch(r.text || r.snippet || '', recipientName, fingerprint),
   }));
   
-  console.log(`Discovered ${allResults.length} candidate URLs from ${queriesUsed.length} queries`);
+  console.log(`Discovered ${allResults.length} candidate URLs from ${queriesUsed.length} queries in ${Date.now() - t0}ms`);
   return { candidates: allResults, queriesUsed, scoredCandidates: finalScoredCandidates };
 }
 
@@ -1358,12 +1380,13 @@ async function enrichWithFirecrawl(url: string): Promise<string | null> {
   }
 }
 
-// NEW: Enrich only top-K candidates by intent score (not "anything abstract")
+// NEW: Enrich only top-K candidates by intent score (not "anything abstract") - PARALLEL
 async function enrichTopCandidatesByIntent(
   candidates: CandidateUrl[],
   maxEnrichments: number = 2
 ): Promise<CandidateUrl[]> {
-  console.log('=== Conditional Firecrawl Enrichment (Intent-Prioritized) ===');
+  const t0 = Date.now();
+  console.log('=== Conditional Firecrawl Enrichment (Intent-Prioritized, Parallel) ===');
   
   // Sort by intent_fit_score descending
   const sortedByIntent = [...candidates].sort((a, b) => 
@@ -1381,13 +1404,21 @@ async function enrichTopCandidatesByIntent(
     return candidates;
   }
   
-  console.log(`Enriching ${enrichmentTargets.length} high-intent abstract candidates`);
+  console.log(`Enriching ${enrichmentTargets.length} high-intent abstract candidates in parallel`);
+  
+  // Run all Firecrawl calls in parallel
+  const enrichmentPromises = enrichmentTargets.map(target => 
+    enrichWithFirecrawl(target.url).then(content => ({ target, content }))
+  );
+  const enrichmentResults = await Promise.all(enrichmentPromises);
+  
+  console.log(`Firecrawl parallel enrichment completed in ${Date.now() - t0}ms`);
   
   const enrichedUrls = new Set<string>();
   const enrichedCandidates: CandidateUrl[] = [];
   
-  for (const target of enrichmentTargets) {
-    const enrichedContent = await enrichWithFirecrawl(target.url);
+  for (const { target, content } of enrichmentResults) {
+    const enrichedContent = content;
     
     if (enrichedContent && enrichedContent.length > target.text.length) {
       enrichedUrls.add(target.url);
@@ -1412,7 +1443,7 @@ async function enrichTopCandidatesByIntent(
     }
   }
   
-  console.log(`Enriched ${enrichedUrls.size} of ${enrichmentTargets.length} targeted candidates`);
+  console.log(`Enriched ${enrichedUrls.size} of ${enrichmentTargets.length} targeted candidates in ${Date.now() - t0}ms`);
   return enrichedCandidates;
 }
 
@@ -1822,34 +1853,33 @@ async function performV2Research(
   const queriesUsed: string[] = [];
   let allExaResults: ExaResult[] = [];
   
-  // ============= STAGE 0: Extract Sender Intent Profile =============
-  const intentProfile = await extractSenderIntentProfile(
-    reachingOutBecause,
-    credibilityStory,
-    askType,
-    LOVABLE_API_KEY
-  );
+  // Stage 0 is now run in parallel with Stage 1A below
   
-  console.log('Sender Intent Profile:', {
-    primary_theme: intentProfile.primary_theme,
-    must_include_terms: intentProfile.must_include_terms.slice(0, 5),
-  });
+  // ============= STAGE 0 + 1A: Run in parallel =============
+  // Stage 0: Extract sender intent profile (needs sender context only)
+  // Stage 1A: Identity search (needs recipient info only)
+  // These are independent, so run them in parallel
   
-  // ============= STAGE 1A: High-precision identity search =============
-  console.log('=== Stage 1A: Identity Search ===');
+  console.log('=== Stage 0 + 1A: Running in parallel ===');
+  const t_parallel_start = Date.now();
   
   const identityQueries = [
     `"${recipientName}" "${recipientCompany}" bio`,
     `"${recipientName}" "${recipientCompany}" "${recipientRole}"`,
   ];
   
-  let identityResults: ExaResult[] = [];
-  for (const q of identityQueries) {
-    queriesUsed.push(q);
-    const results = await exaSearchWithContent(q, exaApiKey, 5);
-    identityResults = [...identityResults, ...results];
-    allExaResults = [...allExaResults, ...results];
-  }
+  // Run intent profile extraction AND identity queries in parallel
+  const [intentProfile, ...identitySearchResults] = await Promise.all([
+    extractSenderIntentProfile(reachingOutBecause, credibilityStory, askType, LOVABLE_API_KEY),
+    ...identityQueries.map(q => exaSearchWithContent(q, exaApiKey, 5))
+  ]);
+  
+  console.log(`Stage 0 + 1A parallel completed in ${Date.now() - t_parallel_start}ms`);
+  
+  // Process identity results
+  queriesUsed.push(...identityQueries);
+  let identityResults: ExaResult[] = identitySearchResults.flat();
+  allExaResults = [...allExaResults, ...identityResults];
   
   // Dedupe by URL
   const seenUrls = new Set<string>();
@@ -1861,6 +1891,11 @@ async function performV2Research(
   
   console.log(`Identity search found ${identityResults.length} unique results`);
   
+  console.log('Sender Intent Profile:', {
+    primary_theme: intentProfile.primary_theme,
+    must_include_terms: intentProfile.must_include_terms.slice(0, 5),
+  });
+
   // ============= STAGE 1B: Extract identity fingerprint =============
   const { fingerprint, confidence } = await extractIdentityFingerprint(
     recipientName,
