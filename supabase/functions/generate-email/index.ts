@@ -1073,7 +1073,70 @@ async function exaSearchWithContent(query: string, exaApiKey: string, numResults
   }));
 }
 
-// ============= FIRECRAWL ENRICHMENT =============
+// ============= FIRECRAWL ENRICHMENT (Intent-Aware) =============
+
+// Research sufficiency thresholds
+const SUFFICIENCY_THRESHOLDS = {
+  MIN_USABLE_HOOKPACKS: 2,
+  MIN_INTENT_FIT: 0.70,
+  MIN_PROMISING_CANDIDATES: 3,
+  PROMISING_CANDIDATE_THRESHOLD: 0.50,
+};
+
+// Evidence types that count as "pointable"
+const POINTABLE_EVIDENCE_TYPES: EvidenceType[] = ['quote', 'named_artifact', 'named_initiative', 'described_decision'];
+
+interface ResearchSufficiency {
+  isEnough: boolean;
+  usableHookPacks: number;
+  top2IntentFit: number;
+  hasPointableEvidence: boolean;
+  reasons: string[];
+}
+
+function checkResearchSufficiency(hookPacks: HookPack[]): ResearchSufficiency {
+  const reasons: string[] = [];
+  
+  // Filter for usable hook packs (overall score >= 0.6)
+  const usableHookPacks = hookPacks.filter(hp => hp.scores.overall >= 0.6);
+  const usableCount = usableHookPacks.length;
+  
+  // Get top 2 intent_fit scores
+  const intentFits = hookPacks.map(hp => hp.scores.intent_fit).sort((a, b) => b - a);
+  const top2IntentFit = intentFits.length >= 2 
+    ? (intentFits[0] + intentFits[1]) / 2 
+    : intentFits[0] || 0;
+  
+  // Check for pointable evidence
+  const hasPointableEvidence = hookPacks.some(hp => 
+    POINTABLE_EVIDENCE_TYPES.includes(hp.hook_fact.evidence_type) &&
+    hp.hook_fact.evidence.length > 20
+  );
+  
+  // Evaluate sufficiency
+  const hasEnoughHookPacks = usableCount >= SUFFICIENCY_THRESHOLDS.MIN_USABLE_HOOKPACKS;
+  const hasGoodIntent = top2IntentFit >= SUFFICIENCY_THRESHOLDS.MIN_INTENT_FIT;
+  
+  if (!hasEnoughHookPacks) reasons.push(`Only ${usableCount} usable hook packs (need ${SUFFICIENCY_THRESHOLDS.MIN_USABLE_HOOKPACKS})`);
+  if (!hasGoodIntent) reasons.push(`Top intent_fit ${top2IntentFit.toFixed(2)} < ${SUFFICIENCY_THRESHOLDS.MIN_INTENT_FIT}`);
+  if (!hasPointableEvidence) reasons.push('No pointable evidence found');
+  
+  const isEnough = hasEnoughHookPacks && hasGoodIntent && hasPointableEvidence;
+  
+  return {
+    isEnough,
+    usableHookPacks: usableCount,
+    top2IntentFit,
+    hasPointableEvidence,
+    reasons,
+  };
+}
+
+function countPromisingCandidates(candidates: CandidateUrl[]): number {
+  return candidates.filter(c => 
+    (c.intent_fit_score || 0) >= SUFFICIENCY_THRESHOLDS.PROMISING_CANDIDATE_THRESHOLD
+  ).length;
+}
 
 function isContentAbstract(text: string): boolean {
   const wordCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
@@ -1142,38 +1205,61 @@ async function enrichWithFirecrawl(url: string): Promise<string | null> {
   }
 }
 
-async function enrichAbstractCandidates(
-  eligibleCandidates: CandidateUrl[],
-  maxEnrichments: number = 3
+// NEW: Enrich only top-K candidates by intent score (not "anything abstract")
+async function enrichTopCandidatesByIntent(
+  candidates: CandidateUrl[],
+  maxEnrichments: number = 2
 ): Promise<CandidateUrl[]> {
-  console.log('=== Stage 5.5: Firecrawl Enrichment ===');
+  console.log('=== Conditional Firecrawl Enrichment (Intent-Prioritized) ===');
   
+  // Sort by intent_fit_score descending
+  const sortedByIntent = [...candidates].sort((a, b) => 
+    (b.intent_fit_score || 0) - (a.intent_fit_score || 0)
+  );
+  
+  // Only consider top candidates that are also abstract
+  const enrichmentTargets = sortedByIntent
+    .filter(c => (c.intent_fit_score || 0) >= SUFFICIENCY_THRESHOLDS.PROMISING_CANDIDATE_THRESHOLD)
+    .filter(c => isContentAbstract(c.text))
+    .slice(0, maxEnrichments);
+  
+  if (enrichmentTargets.length === 0) {
+    console.log('No candidates worth enriching (no high-intent abstract content)');
+    return candidates;
+  }
+  
+  console.log(`Enriching ${enrichmentTargets.length} high-intent abstract candidates`);
+  
+  const enrichedUrls = new Set<string>();
   const enrichedCandidates: CandidateUrl[] = [];
-  let enrichmentCount = 0;
   
-  for (const candidate of eligibleCandidates) {
-    if (isContentAbstract(candidate.text) && enrichmentCount < maxEnrichments) {
-      console.log(`Content abstract for ${candidate.url}, attempting Firecrawl enrichment`);
-      
-      const enrichedContent = await enrichWithFirecrawl(candidate.url);
-      
-      if (enrichedContent && enrichedContent.length > candidate.text.length) {
-        enrichedCandidates.push({
-          ...candidate,
-          text: enrichedContent.substring(0, 8000),
-          reasons: [...candidate.reasons, 'ENRICHED: Firecrawl fetched full content'],
-        });
-        enrichmentCount++;
-        console.log(`Enriched ${candidate.url}: ${candidate.text.length} -> ${enrichedContent.length} chars`);
-      } else {
-        enrichedCandidates.push(candidate);
-      }
-    } else {
-      enrichedCandidates.push(candidate);
+  for (const target of enrichmentTargets) {
+    const enrichedContent = await enrichWithFirecrawl(target.url);
+    
+    if (enrichedContent && enrichedContent.length > target.text.length) {
+      enrichedUrls.add(target.url);
+      console.log(`Enriched ${target.url}: ${target.text.length} -> ${enrichedContent.length} chars (intent_fit: ${(target.intent_fit_score || 0).toFixed(2)})`);
+    }
+    
+    enrichedCandidates.push({
+      ...target,
+      text: enrichedContent && enrichedContent.length > target.text.length 
+        ? enrichedContent.substring(0, 8000) 
+        : target.text,
+      reasons: enrichedContent && enrichedContent.length > target.text.length
+        ? [...target.reasons, `ENRICHED: Firecrawl (intent_fit: ${(target.intent_fit_score || 0).toFixed(2)})`]
+        : target.reasons,
+    });
+  }
+  
+  // Add non-enriched candidates back
+  for (const c of candidates) {
+    if (!enrichmentTargets.some(t => t.url === c.url)) {
+      enrichedCandidates.push(c);
     }
   }
   
-  console.log(`Enriched ${enrichmentCount} of ${eligibleCandidates.length} candidates`);
+  console.log(`Enriched ${enrichedUrls.size} of ${enrichmentTargets.length} targeted candidates`);
   return enrichedCandidates;
 }
 
@@ -1544,28 +1630,76 @@ async function performV2Research(
   // Sort eligible candidates by intent_fit_score (prioritize high-intent sources)
   eligibleCandidates.sort((a, b) => (b.intent_fit_score || 0) - (a.intent_fit_score || 0));
   
-  // Early stop if we have enough
-  if (eligibleCandidates.length >= 2) {
-    console.log('Proceeding with eligible candidates');
-  }
+  // ============= STAGE 6A: FIRST PASS - Extract Hook Packs WITHOUT Firecrawl =============
+  console.log('=== Stage 6A: First-Pass Hook Pack Extraction (Exa content only) ===');
   
-  // ============= STAGE 5.5: Firecrawl Enrichment =============
-  const enrichedCandidates = await enrichAbstractCandidates(
-    eligibleCandidates.slice(0, 6),
-    3
-  );
-  
-  // ============= STAGE 6: Hook Pack extraction =============
-  const hookPacks = await extractHookPacks(
+  let hookPacks = await extractHookPacks(
     recipientName,
     recipientRole,
     recipientCompany,
-    enrichedCandidates,
+    eligibleCandidates.slice(0, 6),
     hypotheses,
     intentProfile,
     credibilityStory,
     LOVABLE_API_KEY
   );
+  
+  console.log(`First-pass extraction: ${hookPacks.length} Hook Packs`);
+  
+  // ============= STAGE 6B: CHECK RESEARCH SUFFICIENCY =============
+  const sufficiency = checkResearchSufficiency(hookPacks);
+  
+  console.log('=== Research Sufficiency Check ===');
+  console.log(`  Usable Hook Packs: ${sufficiency.usableHookPacks}`);
+  console.log(`  Top 2 Intent Fit: ${sufficiency.top2IntentFit.toFixed(2)}`);
+  console.log(`  Has Pointable Evidence: ${sufficiency.hasPointableEvidence}`);
+  console.log(`  Is Sufficient: ${sufficiency.isEnough}`);
+  if (!sufficiency.isEnough) {
+    console.log(`  Reasons: ${sufficiency.reasons.join('; ')}`);
+  }
+  
+  // ============= STAGE 6C: CONDITIONAL FIRECRAWL ENRICHMENT =============
+  // Only enrich if: research insufficient AND we have promising candidates worth enriching
+  
+  if (!sufficiency.isEnough) {
+    const promisingCount = countPromisingCandidates(eligibleCandidates);
+    console.log(`Promising candidates (intent >= ${SUFFICIENCY_THRESHOLDS.PROMISING_CANDIDATE_THRESHOLD}): ${promisingCount}`);
+    
+    if (promisingCount >= SUFFICIENCY_THRESHOLDS.MIN_PROMISING_CANDIDATES) {
+      console.log('=== Stage 6C: Conditional Firecrawl Enrichment ===');
+      console.log(`Enriching because: research insufficient AND ${promisingCount} promising candidates available`);
+      
+      // Enrich top candidates by intent score (not "anything abstract")
+      const enrichedCandidates = await enrichTopCandidatesByIntent(
+        eligibleCandidates.slice(0, 6),
+        2  // Only enrich top 2
+      );
+      
+      // ============= STAGE 6D: RE-EXTRACT Hook Packs with enriched content =============
+      console.log('=== Stage 6D: Re-Extracting Hook Packs (with enriched content) ===');
+      
+      hookPacks = await extractHookPacks(
+        recipientName,
+        recipientRole,
+        recipientCompany,
+        enrichedCandidates,
+        hypotheses,
+        intentProfile,
+        credibilityStory,
+        LOVABLE_API_KEY
+      );
+      
+      console.log(`Post-enrichment extraction: ${hookPacks.length} Hook Packs`);
+      
+      // Log improvement
+      const newSufficiency = checkResearchSufficiency(hookPacks);
+      console.log(`Post-enrichment sufficiency: usable=${newSufficiency.usableHookPacks}, intent=${newSufficiency.top2IntentFit.toFixed(2)}, pointable=${newSufficiency.hasPointableEvidence}`);
+    } else {
+      console.log(`Skipping Firecrawl: only ${promisingCount} promising candidates (need ${SUFFICIENCY_THRESHOLDS.MIN_PROMISING_CANDIDATES})`);
+    }
+  } else {
+    console.log('Skipping Firecrawl: research is already sufficient');
+  }
   
   return {
     hookPacks,
