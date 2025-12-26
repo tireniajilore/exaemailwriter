@@ -65,9 +65,7 @@ TEXTURE TIPS:
 - Don't explain who the recipient is to them. They know.
 
 LENGTH:
-The email should take 15-20 seconds to read. Shorter is better.
-If you can say it in 80 words, don't stretch to 120. Concise > complete.
-Target: 80-130 words. Absolute max: 150.
+Readable in under 20 seconds. Shorter is better. Do not pad.
 
 STRUCTURE:
 - Subject: short, specific, intriguing (no clickbait)
@@ -1502,7 +1500,7 @@ VOICE REMINDER (most important):
 HARD FIXES:
 - "Like you," must appear exactly once (capital L, comma after)
 - "Like you," sentence must be under 25 words and feel natural
-- Word count: 60-150 words (aim for 80-100)
+- Readable in under 20 seconds. Shorter is better. Do not pad.
 - End with just "Best," 
 - No em-dashes, no brackets, no corporate buzzwords
 
@@ -1972,7 +1970,7 @@ ${researchResult?.senderIntentProfile ? `- Theme: ${researchResult.senderIntentP
 REMEMBER:
 - Include "Like you," exactly once (capital L, comma)
 - Put the "Like you," line in paragraph 1 or 2
-- Keep it SHORT: 80-130 words ideal, 150 max
+- Readable in under 20 seconds. Shorter is better. Do not pad.
 - One clear ask at the end
 - End with just "Best," (no name after)
 - No em-dashes, no brackets, no corporate speak
