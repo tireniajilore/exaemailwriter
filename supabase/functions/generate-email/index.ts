@@ -2472,10 +2472,25 @@ Return JSON only:
     }
 
     // Build response
+    const hookPacks = researchResult?.hookPacks || [];
+    
+    // Map V2 hookPacks to legacy hookFacts format for UI compatibility
+    const hookFacts = hookPacks.map(hp => ({
+      claim: hp.hook_fact.claim,
+      source_url: hp.hook_fact.source_url,
+      evidence_quote: hp.hook_fact.evidence,
+      why_relevant: hp.bridge.why_relevant,
+      bridge_type: hp.bridge.bridge_angle === 'domain' ? 'intent' as const : 
+                   hp.bridge.bridge_angle === 'value' ? 'credibility' as const : 
+                   'curiosity' as const,
+      hook_score: Math.max(1, Math.min(5, Math.round(hp.scores.overall * 5))),
+    }));
+    
     const responsePayload: any = {
       subject: emailData.subject,
       body: emailData.body,
-      hookPacks: researchResult?.hookPacks || [],
+      hookPacks,
+      hookFacts, // Legacy format for UI display
       exaQueries: researchResult?.queriesUsed || [],
       exaResults: researchResult?.exaResults.map(r => ({ url: r.url, title: r.title, snippet: r.snippet })) || [],
       selectedSources: researchResult?.selectedSources || [],
