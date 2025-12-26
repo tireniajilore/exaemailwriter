@@ -6,11 +6,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const PROMPT_VERSION = 'v7.0-hook-packs';
+const PROMPT_VERSION = 'v8.0-intent-driven';
 const MODEL_NAME = 'google/gemini-2.5-flash';
 const RESEARCH_MODEL_NAME = 'google/gemini-2.5-flash';
 
-// ============= SUPER PROMPT (Updated for V2 Hook Packs) =============
+// ============= SUPER PROMPT (Updated for V2 Intent-Driven Hook Packs) =============
 const SUPER_PROMPT = `You are an expert writing coach who crafts short, vivid, highly personalized cold emails.
 Your job is to use the sender's inputs AND any researched information about the recipient to write a warm, confident, memorable email that a busy person will actually read and respond to.
 
@@ -30,19 +30,24 @@ CONNECTION HIERARCHY for "Like you," bridge (in priority order):
 3) Shared constraint (regulated environment, emerging markets, resource constraints)
 4) Shared institution (school, company, program) — use ONLY as last resort
 
-HOW TO WRITE THE "Like you," LINE:
+HOW TO WRITE THE "Like you," LINE using ingredients:
 - Must start with "Like you," (capital L, comma after)
-- The phrase connects sender's story to a hook fact OR recipient's role/company if no facts available
+- Use the provided "Like you ingredients" to craft a natural sentence:
+  - shared_axis: the domain/theme you both care about
+  - shared_action: what you both DO in that space
+  - shared_stakes: why it matters to both of you
+- The sentence should feel natural, not mechanical. Combine the ingredients fluidly.
 - Keep it concrete and non-obvious
 - The sentence containing "Like you," must NOT include generic phrases like "passionate about", "think a lot about", "reaching out", "aligned with", "resonates", "inspired", "keen to", or "deeply appreciate"
 - The "Like you," sentence should appear in the first or second paragraph
 
 RESEARCH USAGE RULES:
-- If Hook Packs with "Like you" bridges are provided, use the suggested bridge line as inspiration
+- If Hook Packs with "Like you" ingredients are provided, use them to craft your "Like you," line
 - Use facts as anchors for a parallel or question, not as praise or résumé summary
 - Do NOT summarize the recipient's career or list accomplishments
 - If facts are empty or no real research was found, do NOT imply you did research
 - If no researched facts exist, still create a "Like you," bridge using role/company context and the sender's story
+- IMPORTANT: Prioritize Hook Packs with high intent_fit scores—these align with what the sender is actually trying to accomplish
 
 BANNED CLICHÉ PHRASES (never use these):
 - "i'm reaching out because" or "reaching out because"
@@ -83,6 +88,7 @@ DO NOT EVER:
 
 type AskType = "chat" | "feedback" | "referral" | "job" | "other";
 type BridgeAngle = 'domain' | 'value' | 'tradeoff' | 'artifact' | 'inflection' | 'shared-affiliation';
+type EvidenceType = 'quote' | 'named_initiative' | 'described_decision' | 'named_artifact' | 'public_stance';
 
 interface ValidationResult {
   valid: boolean;
@@ -92,23 +98,32 @@ interface ValidationResult {
   clicheCount: number;
 }
 
-type EvidenceType = 'quote' | 'named_initiative' | 'described_decision' | 'named_artifact';
+// NEW: LikeYouIngredients replaces like_you_line
+interface LikeYouIngredients {
+  shared_axis: string;      // "building an inclusive leadership pipeline"
+  shared_action: string;    // "convening leaders / running programs / investing"
+  shared_stakes: string;    // "who gets opportunity next"
+  optional_phrases?: string[]; // tiny set, optional
+}
 
+// UPDATED: HookPack with like_you_ingredients and intent_fit
 interface HookPack {
   hook_fact: {
     claim: string;
     source_url: string;
     evidence: string;
-    evidence_type?: EvidenceType;
+    evidence_type: EvidenceType;
   };
   bridge: {
-    like_you_line: string;
     bridge_angle: BridgeAngle;
     why_relevant: string;
+    like_you_ingredients: LikeYouIngredients;
+    intent_theme: string; // which sender theme it supports
   };
   scores: {
     identity_conf: number;
     non_generic: number;
+    intent_fit: number;      // NEW - critical
     bridgeability: number;
     overall: number;
   };
@@ -122,11 +137,22 @@ interface IdentityFingerprint {
   confounders: { name: string; negative_keywords: string[] }[];
 }
 
+// UPDATED: BridgeHypothesis without query_templates
 interface BridgeHypothesis {
   type: 'domain' | 'value' | 'tradeoff';
-  keywords: string[];
-  query_templates: string[];
-  proof_target: string;
+  theme: string;            // ties back to intent theme
+  keywords: string[];       // 6–12
+  proof_target: string;     // what counts as proof
+  evidence_types: EvidenceType[]; // preferred evidence types
+}
+
+// NEW: SenderIntentProfile - the missing primitive
+interface SenderIntentProfile {
+  primary_theme: string;          // e.g. "inclusion / Black leadership pipeline"
+  secondary_themes: string[];     // optional
+  must_include_terms: string[];   // 6–12 terms
+  avoid_terms: string[];          // 4–10 terms (optional)
+  preferred_evidence_types: EvidenceType[]; // ranked
 }
 
 interface ExaResult {
@@ -144,6 +170,7 @@ interface CandidateUrl {
   passed_niche_gate: boolean;
   reasons: string[];
   identity_locked: boolean;
+  intent_fit_score?: number; // NEW
 }
 
 interface EnforcementResults {
@@ -178,6 +205,132 @@ const GENERIC_LIKE_YOU_PATTERNS = [
   "keen to",
   "deeply appreciate",
 ];
+
+// ============= QUERY TEMPLATE LIBRARY (STABLE) =============
+
+const TEMPLATE_LIBRARY = {
+  identity: [
+    `"{name}" "{company}" bio`,
+    `"{name}" "{company}" "{role}"`,
+  ],
+  interview: [
+    `"{name}" {company} interview {keyword}`,
+    `"{name}" {company} podcast {keyword}`,
+  ],
+  speech: [
+    `"{name}" {company} speech {keyword}`,
+    `"{name}" {company} keynote {keyword}`,
+    `"{name}" {company} talk {keyword}`,
+  ],
+  written: [
+    `"{name}" {company} essay {keyword}`,
+    `"{name}" {company} wrote {keyword}`,
+    `"{name}" {company} article {keyword}`,
+  ],
+  initiative: [
+    `"{name}" {company} initiative {keyword}`,
+    `"{name}" {company} program {keyword}`,
+    `"{name}" {company} launched {keyword}`,
+  ],
+  general: [
+    `"{name}" {company} "{keyword}"`,
+    `"{name}" {company} {keyword}`,
+  ],
+};
+
+// ============= STAGE 0: SENDER INTENT PROFILE EXTRACTION =============
+
+async function extractSenderIntentProfile(
+  reachingOutBecause: string,
+  credibilityStory: string,
+  askType: AskType,
+  LOVABLE_API_KEY: string
+): Promise<SenderIntentProfile> {
+  console.log('=== Stage 0: Extract Sender Intent Profile ===');
+  
+  const prompt = `Analyze the sender's intent and extract a profile for research targeting.
+
+SENDER CONTEXT:
+- Why reaching out: "${reachingOutBecause}"
+- Credibility story: "${credibilityStory}"
+- Ask type: ${askType}
+
+TASK:
+Extract a Sender Intent Profile that captures what the sender ACTUALLY cares about.
+This profile will be used to:
+1. Generate targeted search queries
+2. Score research results for relevance
+3. Ensure the "Like you," bridge aligns with the sender's real purpose
+
+RULES:
+- The primary_theme should be the core topic/domain the sender cares about (e.g., "inclusion / Black leadership pipeline", "AI safety", "enterprise sales transformation")
+- must_include_terms should be 6-12 specific terms likely to appear in relevant content about that theme
+- avoid_terms should be 4-10 terms that indicate content is NOT relevant to the sender's intent
+- Think about what would make a source MEANINGFUL for this sender, not just "about" the recipient
+
+EXAMPLES:
+
+If sender is inviting a speaker for Black leadership:
+{
+  "primary_theme": "inclusion / Black leadership pipeline",
+  "secondary_themes": ["talent development", "corporate diversity"],
+  "must_include_terms": ["inclusion", "diversity", "pipeline", "mentorship", "sponsorship", "talent", "underrepresented", "equity", "belonging", "access", "Black", "leadership"],
+  "avoid_terms": ["M&A", "acquisition", "revenue", "earnings", "stock", "quarterly"],
+  "preferred_evidence_types": ["quote", "named_initiative", "public_stance"]
+}
+
+If sender is a founder seeking feedback on AI product:
+{
+  "primary_theme": "AI product development / applied ML",
+  "secondary_themes": ["product-market fit", "technical architecture"],
+  "must_include_terms": ["AI", "machine learning", "product", "build", "ship", "launch", "iterate", "users", "feedback", "prototype"],
+  "avoid_terms": ["policy", "regulation", "lobbying", "political", "fundraising"],
+  "preferred_evidence_types": ["described_decision", "named_artifact", "quote"]
+}
+
+OUTPUT JSON ONLY:
+{
+  "primary_theme": "...",
+  "secondary_themes": ["...", "..."],
+  "must_include_terms": ["...", "...", ...],
+  "avoid_terms": ["...", ...],
+  "preferred_evidence_types": ["quote", "named_initiative", ...]
+}`;
+
+  try {
+    const response = await callLLM(
+      LOVABLE_API_KEY,
+      'You extract sender intent profiles to guide cold email research. Be specific about themes and terms.',
+      prompt,
+      RESEARCH_MODEL_NAME
+    );
+    
+    const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    
+    return {
+      primary_theme: parsed.primary_theme || '',
+      secondary_themes: parsed.secondary_themes || [],
+      must_include_terms: parsed.must_include_terms || [],
+      avoid_terms: parsed.avoid_terms || [],
+      preferred_evidence_types: parsed.preferred_evidence_types || ['quote', 'named_initiative', 'described_decision'],
+    };
+  } catch (e) {
+    console.error('Failed to extract sender intent profile:', e);
+    
+    // Fallback: extract simple keywords from sender context
+    const combinedText = `${reachingOutBecause} ${credibilityStory}`.toLowerCase();
+    const simpleTerms = extractSimpleKeywords(combinedText);
+    
+    return {
+      primary_theme: reachingOutBecause.substring(0, 50),
+      secondary_themes: [],
+      must_include_terms: simpleTerms.slice(0, 8),
+      avoid_terms: [],
+      preferred_evidence_types: ['quote', 'named_initiative', 'described_decision'],
+    };
+  }
+}
 
 // ============= STAGE 1: IDENTITY FINGERPRINT =============
 
@@ -272,61 +425,52 @@ Return ONLY valid JSON.`;
   }
 }
 
-// ============= STAGE 2: BRIDGE HYPOTHESES =============
+// ============= STAGE 2: BRIDGE HYPOTHESES (UPDATED) =============
 
 async function generateBridgeHypotheses(
   reachingOutBecause: string,
   credibilityStory: string,
   recipientRole: string,
   recipientCompany: string,
+  intentProfile: SenderIntentProfile,
   LOVABLE_API_KEY: string
 ): Promise<BridgeHypothesis[]> {
   console.log('=== Stage 2: Generate Bridge Hypotheses ===');
   
-  const prompt = `Generate 3 "bridge hypotheses" for a cold email connection.
+  const prompt = `You are designing search hypotheses for finding public, verifiable "hook facts" about a specific person.
+The goal is to support a cold email that MUST include a meaningful "Like you," bridge aligned with the sender's intent.
 
-SENDER CONTEXT:
-- Why reaching out: "${reachingOutBecause}"
-- Credibility story: "${credibilityStory}"
+INPUTS:
+- sender intent: ${reachingOutBecause}
+- sender credibility: ${credibilityStory}
+- sender's primary theme: ${intentProfile.primary_theme}
+- sender's must-include terms: ${intentProfile.must_include_terms.join(', ')}
+- recipient: ${recipientRole} at ${recipientCompany}
 
-RECIPIENT:
-- Role: ${recipientRole} at ${recipientCompany}
+TASK:
+Return exactly 3 hypotheses: domain, value, tradeoff.
 
-A "bridge hypothesis" is a theory about what shared ground might connect sender to recipient.
+RULES:
+- Each hypothesis MUST be anchored to the sender's intent (not generic career bio).
+- Provide 6–12 keywords that are likely to appear in interviews, talks, essays, podcasts, initiatives, or quotes.
+- Provide a "proof_target" describing what would count as strong evidence.
+- Provide preferred evidence types (ranked): quote, named_initiative, named_artifact, described_decision, public_stance.
+- Avoid generic keywords like "career", "role", "executive", "strategy" unless the sender intent is explicitly about those topics.
+- The "theme" should tie back to the sender's intent profile.
 
-Generate exactly 3 hypotheses:
-1. DOMAIN bridge: shared work/problem space
-2. VALUE bridge: shared motivation (inclusion, craftsmanship, resilience, etc.)
-3. TRADEOFF bridge: shared tension (scaling quality vs speed, adoption vs trust, etc.)
-
-For each hypothesis, provide:
-- type: "domain", "value", or "tradeoff"
-- keywords: 5-10 search keywords that would find evidence of this bridge
-- query_templates: 2-3 Exa search query templates (use {name} and {company} as placeholders)
-- proof_target: what would count as proof this bridge exists
-
-Return JSON:
+OUTPUT JSON ONLY:
 {
   "hypotheses": [
-    {
-      "type": "domain",
-      "keywords": ["keyword1", "keyword2", ...],
-      "query_templates": [
-        "\"{name}\" {company} interview keyword1 keyword2",
-        "\"{name}\" {company} podcast keyword1"
-      ],
-      "proof_target": "Recipient has spoken about X or built Y"
-    },
-    ...
+    { "type": "domain", "theme": "...", "keywords": [...], "proof_target": "...", "evidence_types": [...] },
+    { "type": "value",  "theme": "...", "keywords": [...], "proof_target": "...", "evidence_types": [...] },
+    { "type": "tradeoff", "theme": "...", "keywords": [...], "proof_target": "...", "evidence_types": [...] }
   ]
-}
-
-Return ONLY valid JSON.`;
+}`;
 
   try {
     const response = await callLLM(
       LOVABLE_API_KEY,
-      'You generate strategic hypotheses for cold email personalization.',
+      'You generate strategic hypotheses for cold email personalization. Be rigorous about aligning with sender intent.',
       prompt,
       RESEARCH_MODEL_NAME
     );
@@ -334,56 +478,124 @@ Return ONLY valid JSON.`;
     const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     
-    return (parsed.hypotheses || []).slice(0, 3);
+    return (parsed.hypotheses || []).slice(0, 3).map((h: any) => ({
+      type: h.type,
+      theme: h.theme || '',
+      keywords: h.keywords || [],
+      proof_target: h.proof_target || '',
+      evidence_types: h.evidence_types || ['quote', 'named_initiative'],
+    }));
   } catch (e) {
     console.error('Failed to generate bridge hypotheses:', e);
     
-    // Fallback: simple keyword-based hypotheses
-    const domainKeywords = extractSimpleKeywords(reachingOutBecause);
-    const valueKeywords = extractSimpleKeywords(credibilityStory);
-    
+    // Fallback: use intent profile terms directly
     return [
       {
         type: 'domain',
-        keywords: domainKeywords.slice(0, 5),
-        query_templates: [`"{name}" {company} interview ${domainKeywords[0] || ''}`],
-        proof_target: 'Recipient has discussed similar domain topics',
+        theme: intentProfile.primary_theme,
+        keywords: intentProfile.must_include_terms.slice(0, 6),
+        proof_target: 'Recipient has discussed or led something related to sender intent',
+        evidence_types: ['quote', 'named_initiative', 'described_decision'],
       },
       {
         type: 'value',
-        keywords: valueKeywords.slice(0, 5),
-        query_templates: [`"{name}" {company} talk ${valueKeywords[0] || ''}`],
-        proof_target: 'Recipient shares similar values or motivations',
+        theme: intentProfile.secondary_themes[0] || intentProfile.primary_theme,
+        keywords: intentProfile.must_include_terms.slice(3, 9),
+        proof_target: 'Recipient shares values aligned with sender theme',
+        evidence_types: ['quote', 'public_stance', 'named_initiative'],
       },
       {
         type: 'tradeoff',
-        keywords: ['decision', 'tradeoff', 'challenge', 'pivot'],
-        query_templates: [`"{name}" {company} decision challenge`],
-        proof_target: 'Recipient has faced similar tradeoffs',
+        theme: 'challenges in ' + intentProfile.primary_theme,
+        keywords: ['decision', 'challenge', 'tradeoff', 'chose', ...intentProfile.must_include_terms.slice(0, 3)],
+        proof_target: 'Recipient has faced similar tensions or tradeoffs',
+        evidence_types: ['described_decision', 'quote'],
       },
     ];
   }
 }
 
 function extractSimpleKeywords(text: string): string[] {
-  const stopwords = new Set(['i', 'me', 'my', 'we', 'our', 'you', 'your', 'the', 'a', 'an', 'and', 'or', 'but', 'to', 'for', 'of', 'in', 'on', 'at', 'by', 'with', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those', 'it', 'its']);
+  const stopwords = new Set(['i', 'me', 'my', 'we', 'our', 'you', 'your', 'the', 'a', 'an', 'and', 'or', 'but', 'to', 'for', 'of', 'in', 'on', 'at', 'by', 'with', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'this', 'that', 'these', 'those', 'it', 'its', 'about', 'who', 'what', 'where', 'when', 'why', 'how']);
   
   return text.toLowerCase()
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length > 3 && !stopwords.has(w))
-    .slice(0, 10);
+    .slice(0, 12);
 }
 
-// ============= STAGE 3: CANDIDATE DISCOVERY =============
+// ============= STAGE 3: ITERATIVE CANDIDATE DISCOVERY (V2) =============
 
-async function discoverCandidates(
+function buildQueriesFromTemplates(
+  name: string,
+  company: string,
+  keywords: string[],
+  templateType: keyof typeof TEMPLATE_LIBRARY,
+  maxQueries: number = 2
+): string[] {
+  const templates = TEMPLATE_LIBRARY[templateType];
+  const queries: string[] = [];
+  
+  for (let i = 0; i < Math.min(templates.length, maxQueries); i++) {
+    const keyword = keywords[i % keywords.length] || '';
+    const query = templates[i]
+      .replace('{name}', name)
+      .replace('{company}', company)
+      .replace('{keyword}', keyword)
+      .replace('"{keyword}"', `"${keyword}"`);
+    queries.push(query);
+  }
+  
+  return queries;
+}
+
+function scoreSnippetForIntent(
+  text: string,
+  title: string,
+  url: string,
+  intentProfile: SenderIntentProfile
+): number {
+  const combined = `${title} ${text} ${url}`.toLowerCase();
+  let score = 0.0;
+  
+  // Points for must_include_terms (max 0.5)
+  const mustIncludeHits = intentProfile.must_include_terms.filter(term => 
+    combined.includes(term.toLowerCase())
+  ).length;
+  score += Math.min(0.5, mustIncludeHits * 0.08);
+  
+  // Points for evidence markers (max 0.25)
+  const evidenceMarkers = ['interview', 'podcast', 'keynote', 'essay', 'op-ed', 'initiative', 'program', 'speech', 'talk', 'wrote', 'said'];
+  const evidenceHits = evidenceMarkers.filter(marker => combined.includes(marker)).length;
+  score += Math.min(0.25, evidenceHits * 0.05);
+  
+  // Negative points for generic bio signals (max -0.25)
+  const genericBioSignals = ['joined', 'previously', 'tenure', 'career', 'role', 'executive', 'appointed', 'named', 'promoted'];
+  const genericHits = genericBioSignals.filter(signal => combined.includes(signal)).length;
+  score -= Math.min(0.25, genericHits * 0.05);
+  
+  // Negative points for avoid_terms (max -0.3)
+  const avoidHits = intentProfile.avoid_terms.filter(term => 
+    combined.includes(term.toLowerCase())
+  ).length;
+  score -= Math.min(0.3, avoidHits * 0.1);
+  
+  return Math.max(0, Math.min(1, score + 0.3)); // baseline 0.3, clamp to 0-1
+}
+
+async function discoverCandidatesV2(
   recipientName: string,
   fingerprint: IdentityFingerprint,
   hypotheses: BridgeHypothesis[],
+  intentProfile: SenderIntentProfile,
   exaApiKey: string
-): Promise<{ candidates: ExaResult[]; queriesUsed: string[] }> {
-  console.log('=== Stage 3: Candidate Discovery ===');
+): Promise<{ candidates: ExaResult[]; queriesUsed: string[]; scoredCandidates: { url: string; intent_fit: number; identity_match: boolean }[] }> {
+  console.log('=== Stage 3: Iterative Candidate Discovery V2 ===');
+  
+  const MAX_QUERIES = 12;
+  const BATCH_SIZE = 4;
+  const MIN_HIGH_INTENT_CANDIDATES = 4;
   
   const queriesUsed: string[] = [];
   const allResults: ExaResult[] = [];
@@ -395,31 +607,49 @@ async function discoverCandidates(
     .map(k => `-${k}`)
     .join(' ');
   
-  // Run max 2 queries per hypothesis, cap at 6 total
-  let queryCount = 0;
-  const MAX_QUERIES = 6;
+  // Collect all keywords from hypotheses + intent profile
+  const primaryKeywords = intentProfile.must_include_terms.slice(0, 6);
+  const hypothesisKeywords = hypotheses.flatMap(h => h.keywords.slice(0, 4));
+  const allKeywords = [...new Set([...primaryKeywords, ...hypothesisKeywords])];
   
-  for (const hypothesis of hypotheses) {
-    if (queryCount >= MAX_QUERIES) break;
+  // ============= LANE A: Identity queries (2 queries) =============
+  console.log('Lane A: Identity queries');
+  for (const template of TEMPLATE_LIBRARY.identity) {
+    if (queriesUsed.length >= 2) break;
+    let query = template
+      .replace('{name}', recipientName)
+      .replace('{company}', fingerprint.company)
+      .replace('{role}', fingerprint.role_keywords[0] || '');
+    if (negations) query = `${query} ${negations}`;
     
-    for (const template of hypothesis.query_templates.slice(0, 2)) {
-      if (queryCount >= MAX_QUERIES) break;
-      
-      // Fill in template
-      let query = template
-        .replace('{name}', recipientName)
-        .replace('{company}', fingerprint.company);
-      
-      // Add negations if we have confounders
-      if (negations) {
-        query = `${query} ${negations}`;
+    queriesUsed.push(query);
+    const results = await exaSearchWithContent(query, exaApiKey, 5);
+    for (const r of results) {
+      if (!seenUrls.has(r.url)) {
+        seenUrls.add(r.url);
+        allResults.push(r);
       }
+    }
+  }
+  
+  // ============= LANE B: Primary intent theme queries (4-6 queries) =============
+  console.log('Lane B: Primary intent theme queries');
+  const laneB_templates = ['interview', 'speech', 'initiative'] as const;
+  let laneBCount = 0;
+  
+  for (const templateType of laneB_templates) {
+    if (queriesUsed.length >= 8 || laneBCount >= 4) break;
+    
+    const keywordsForType = primaryKeywords.slice(laneBCount, laneBCount + 2);
+    const queries = buildQueriesFromTemplates(recipientName, fingerprint.company, keywordsForType, templateType, 2);
+    
+    for (const query of queries) {
+      if (queriesUsed.length >= 8) break;
+      let finalQuery = negations ? `${query} ${negations}` : query;
+      queriesUsed.push(finalQuery);
+      laneBCount++;
       
-      queriesUsed.push(query);
-      queryCount++;
-      
-      const results = await exaSearchWithContent(query, exaApiKey, 10);
-      
+      const results = await exaSearchWithContent(finalQuery, exaApiKey, 8);
       for (const r of results) {
         if (!seenUrls.has(r.url)) {
           seenUrls.add(r.url);
@@ -429,8 +659,63 @@ async function discoverCandidates(
     }
   }
   
+  // Score candidates for early stopping
+  const scoredCandidates = allResults.map(r => ({
+    url: r.url,
+    intent_fit: scoreSnippetForIntent(r.text || r.snippet || '', r.title, r.url, intentProfile),
+    identity_match: checkQuickIdentityMatch(r.text || r.snippet || '', recipientName, fingerprint),
+  }));
+  
+  const highIntentCount = scoredCandidates.filter(c => c.intent_fit >= 0.6 && c.identity_match).length;
+  console.log(`After Lane A+B: ${highIntentCount} high-intent candidates`);
+  
+  // Early stop if we have enough
+  if (highIntentCount >= MIN_HIGH_INTENT_CANDIDATES) {
+    console.log('Early stop: enough high-intent candidates');
+    return { candidates: allResults, queriesUsed, scoredCandidates };
+  }
+  
+  // ============= LANE C: Secondary/hypothesis queries (2-4 more) =============
+  console.log('Lane C: Secondary theme queries');
+  const laneC_templates = ['written', 'general'] as const;
+  
+  for (const templateType of laneC_templates) {
+    if (queriesUsed.length >= MAX_QUERIES) break;
+    
+    const queries = buildQueriesFromTemplates(recipientName, fingerprint.company, hypothesisKeywords.slice(0, 3), templateType, 2);
+    
+    for (const query of queries) {
+      if (queriesUsed.length >= MAX_QUERIES) break;
+      let finalQuery = negations ? `${query} ${negations}` : query;
+      queriesUsed.push(finalQuery);
+      
+      const results = await exaSearchWithContent(finalQuery, exaApiKey, 6);
+      for (const r of results) {
+        if (!seenUrls.has(r.url)) {
+          seenUrls.add(r.url);
+          allResults.push(r);
+        }
+      }
+    }
+  }
+  
+  // Rescore all candidates
+  const finalScoredCandidates = allResults.map(r => ({
+    url: r.url,
+    intent_fit: scoreSnippetForIntent(r.text || r.snippet || '', r.title, r.url, intentProfile),
+    identity_match: checkQuickIdentityMatch(r.text || r.snippet || '', recipientName, fingerprint),
+  }));
+  
   console.log(`Discovered ${allResults.length} candidate URLs from ${queriesUsed.length} queries`);
-  return { candidates: allResults, queriesUsed };
+  return { candidates: allResults, queriesUsed, scoredCandidates: finalScoredCandidates };
+}
+
+function checkQuickIdentityMatch(text: string, recipientName: string, fingerprint: IdentityFingerprint): boolean {
+  const lowerText = text.toLowerCase();
+  const nameParts = recipientName.toLowerCase().split(/\s+/);
+  const hasName = nameParts.some(part => part.length > 2 && lowerText.includes(part));
+  const hasCompany = lowerText.includes(fingerprint.company.toLowerCase());
+  return hasName && hasCompany;
 }
 
 // ============= STAGE 4: NICHE GATE =============
@@ -537,7 +822,7 @@ function checkIdentityLock(
   return { locked: true, reasons };
 }
 
-// ============= STAGE 6: HOOK PACK EXTRACTION =============
+// ============= STAGE 6: HOOK PACK EXTRACTION (UPDATED) =============
 
 async function extractHookPacks(
   recipientName: string,
@@ -545,10 +830,11 @@ async function extractHookPacks(
   recipientCompany: string,
   eligibleCandidates: CandidateUrl[],
   hypotheses: BridgeHypothesis[],
+  intentProfile: SenderIntentProfile,
   credibilityStory: string,
   LOVABLE_API_KEY: string
 ): Promise<HookPack[]> {
-  console.log('=== Stage 6: Hook Pack Extraction ===');
+  console.log('=== Stage 6: Hook Pack Extraction (Intent-Conditioned) ===');
   
   if (eligibleCandidates.length === 0) {
     console.log('No eligible candidates for hook pack extraction');
@@ -558,20 +844,27 @@ async function extractHookPacks(
   const sourcesContext = eligibleCandidates.slice(0, 6).map((c, i) => `
 SOURCE ${i + 1}: ${c.url}
 Title: ${c.title}
+Intent Fit Score: ${(c.intent_fit_score || 0).toFixed(2)}
 Content: ${(c.text || '').substring(0, 2000)}
 `).join('\n---\n');
 
   const hypothesesContext = hypotheses.map((h, i) => `
-${i + 1}. ${h.type.toUpperCase()} bridge: Looking for evidence that ${h.proof_target}
+${i + 1}. ${h.type.toUpperCase()} bridge (theme: ${h.theme}): Looking for evidence that ${h.proof_target}
    Keywords: ${h.keywords.join(', ')}
+   Preferred evidence: ${h.evidence_types.join(', ')}
 `).join('');
 
   const extractionPrompt = `Extract Hook Packs for a cold email to ${recipientName}, ${recipientRole} at ${recipientCompany}.
 
+SENDER'S INTENT PROFILE:
+- Primary theme: ${intentProfile.primary_theme}
+- Must-include terms: ${intentProfile.must_include_terms.join(', ')}
+- Avoid terms: ${intentProfile.avoid_terms.join(', ')}
+
 SENDER'S CREDIBILITY STORY:
 "${credibilityStory}"
 
-BRIDGE HYPOTHESES (what we're looking for):
+BRIDGE HYPOTHESES (aligned with sender intent):
 ${hypothesesContext}
 
 SOURCES TO ANALYZE:
@@ -579,55 +872,48 @@ ${sourcesContext}
 
 For each source, try to extract a Hook Pack. A Hook Pack contains:
 1. A POINTABLE CLAIM - a fact that can be quoted, named, or directly referenced
-2. A concrete "Like you," bridge line that connects sender to this claim
-3. Scores for quality
+2. "Like you" INGREDIENTS (NOT a pre-written sentence!) for crafting the bridge
+3. Scores for quality including INTENT_FIT
 
 ═══════════════════════════════════════════════════════════════════
 CRITICAL: EVIDENCE MUST BE POINTABLE
 ═══════════════════════════════════════════════════════════════════
 
 A claim is ONLY valid if it includes at least one of:
-✓ DIRECT QUOTE - Exact words the recipient said (in quotes)
-✓ NAMED INITIATIVE/PROGRAM - A specific named project, product, or program they created/led
-✓ DESCRIBED DECISION/TRADEOFF - A specific choice they made with concrete context
-✓ NAMED ARTIFACT - A specific article, podcast, talk, paper, or interview by name/title
+✓ QUOTE - Exact words the recipient said (in quotes)
+✓ NAMED_INITIATIVE - A specific named project, product, or program they created/led
+✓ DESCRIBED_DECISION - A specific choice they made with concrete context
+✓ NAMED_ARTIFACT - A specific article, podcast, talk, paper, or interview by name/title
+✓ PUBLIC_STANCE - A clearly stated position on an issue
 
 AUTOMATICALLY REJECT claims that are merely:
-✗ "interest in..." / "interested in..."
-✗ "focus on..." / "focused on..."
-✗ "known for..."
-✗ "has been involved in..."
-✗ "passionate about..."
-✗ "believes in..."
-✗ "works on..."
-✗ "is leading..."
+✗ "interest in..." / "focus on..." / "known for..."
+✗ "has been involved in..." / "passionate about..." / "believes in..."
 ✗ Any vague attribution without a specific named thing or direct quote
 
-EXAMPLES:
-
-INVALID (reject these):
-- "Chris has a focus on AI and future of work" → No named artifact or quote
-- "She's known for her work in sustainability" → No specific evidence
-- "He's been involved in major acquisitions" → Which ones?
-- "She's interested in inclusive design" → Vague sentiment
-
-VALID (accept these):
-- "In his EY podcast 'The Empathy Effect', Chris said: 'AI will fundamentally change how we think about empathy in the workplace'" → Named artifact + quote
-- "She led the acquisition of Mandiant in 2022, Microsoft's largest cybersecurity deal" → Named initiative with specifics
-- "He chose to sunset the legacy product despite $50M in revenue, prioritizing long-term platform health" → Described decision with context
-- "In her TED talk 'Designing for the Margins', she argued that inclusive design drives innovation" → Named artifact + paraphrase
-
+═══════════════════════════════════════════════════════════════════
+CRITICAL: LIKE_YOU_INGREDIENTS (NOT like_you_line!)
 ═══════════════════════════════════════════════════════════════════
 
-INVALID "Like you," lines (DO NOT generate):
-- "Like you, I went to Stanford" (just identity mirroring)
-- "Like you, I'm passionate about X" (too generic)
-- "Like you, I work in tech" (too broad)
+Instead of writing a complete "Like you," sentence, provide INGREDIENTS:
+- shared_axis: The domain/theme both sender and recipient care about (e.g., "building inclusive leadership pipelines")
+- shared_action: What they both DO in that space (e.g., "convening leaders", "running mentorship programs")
+- shared_stakes: Why it matters to both (e.g., "who gets opportunity next")
+- optional_phrases: 0-2 specific phrases that might work well (optional)
 
-VALID "Like you," lines:
-- "Like you, I've had to convince skeptical enterprise buyers that AI can be trustworthy"
-- "Like you, I spent years building pipelines before realizing the real bottleneck was mentorship"
-- "Like you, I've wrestled with the tension between moving fast and maintaining quality"
+The email writer will combine these ingredients into a natural "Like you," sentence.
+
+═══════════════════════════════════════════════════════════════════
+CRITICAL: INTENT_FIT SCORING
+═══════════════════════════════════════════════════════════════════
+
+intent_fit measures how well the hook aligns with the SENDER's intent:
+- 1.0: Hook directly supports the sender's primary_theme (e.g., speaker invite about inclusion → found inclusion initiative)
+- 0.7: Hook tangentially relates to sender theme
+- 0.3: Hook is interesting but unrelated to sender intent (e.g., M&A news when sender cares about inclusion)
+- 0.0: Hook actively contradicts sender intent
+
+HARD RULE: If the sender's primary theme is about inclusion/diversity/pipeline AND you find a hook about M&A/acquisitions, that hook's intent_fit should be LOW (0.2-0.4) even if it's non-generic.
 
 Return JSON:
 {
@@ -637,16 +923,23 @@ Return JSON:
         "claim": "Non-obvious claim about recipient",
         "source_url": "https://...",
         "evidence": "8-25 word quote OR named artifact/initiative/decision from source",
-        "evidence_type": "quote|named_initiative|described_decision|named_artifact"
+        "evidence_type": "quote|named_initiative|described_decision|named_artifact|public_stance"
       },
       "bridge": {
-        "like_you_line": "Like you, I...",
         "bridge_angle": "domain|value|tradeoff|artifact|inflection|shared-affiliation",
-        "why_relevant": "Brief explanation of why this bridge works"
+        "why_relevant": "Brief explanation of why this bridge works for the sender's intent",
+        "like_you_ingredients": {
+          "shared_axis": "the domain/theme you both care about",
+          "shared_action": "what you both DO",
+          "shared_stakes": "why it matters",
+          "optional_phrases": ["optional", "phrases"]
+        },
+        "intent_theme": "Which sender theme this supports (e.g., 'inclusion/pipeline')"
       },
       "scores": {
         "identity_conf": 0.0-1.0,
         "non_generic": 0.0-1.0,
+        "intent_fit": 0.0-1.0,
         "bridgeability": 0.0-1.0,
         "overall": 0.0-1.0
       }
@@ -657,11 +950,13 @@ Return JSON:
 SCORING RUBRIC:
 - identity_conf: Is this clearly about the right person? (0.0 = uncertain, 1.0 = definitely them)
 - non_generic: Would this be unknown from their title alone? (0.0 = obvious, 1.0 = surprising)
+- intent_fit: Does this align with the sender's primary theme? (0.0 = irrelevant, 1.0 = perfect fit)
 - bridgeability: Can we write a specific "Like you," line? (0.0 = generic, 1.0 = concrete parallel)
-- overall: Weighted average = 0.45*identity_conf + 0.30*bridgeability + 0.25*non_generic
+- overall: Weighted = 0.40*intent_fit + 0.25*identity_conf + 0.20*non_generic + 0.15*bridgeability
 
 Only include Hook Packs with overall score >= 0.5
-Return maximum 2 Hook Packs, prioritize quality over quantity.
+Return maximum 3 Hook Packs.
+PRIORITIZE INTENT_FIT: If any candidate has intent_fit >= 0.75, at least one Hook Pack MUST come from high-intent sources.
 
 IF NO CLAIMS MEET THE "POINTABLE" REQUIREMENT, RETURN AN EMPTY ARRAY.
 Better to return 0 Hook Packs than to return vague, unprovable claims.
@@ -671,7 +966,7 @@ Return ONLY valid JSON.`;
   try {
     const response = await callLLM(
       LOVABLE_API_KEY,
-      'You extract high-quality personalization hooks for cold emails. Be rigorous about what counts as "bridgeable".',
+      'You extract high-quality, intent-aligned personalization hooks for cold emails. Prioritize hooks that align with the sender\'s actual purpose.',
       extractionPrompt,
       RESEARCH_MODEL_NAME
     );
@@ -679,12 +974,27 @@ Return ONLY valid JSON.`;
     const cleaned = response.replace(/```json\n?|\n?```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     
-    // Filter by overall score and limit to 2
-    const hookPacks: HookPack[] = (parsed.hook_packs || [])
+    // Filter and sort by overall score
+    let hookPacks: HookPack[] = (parsed.hook_packs || [])
       .filter((hp: HookPack) => hp.scores?.overall >= 0.5)
-      .slice(0, 2);
+      .sort((a: HookPack, b: HookPack) => (b.scores?.overall || 0) - (a.scores?.overall || 0))
+      .slice(0, 3);
     
-    console.log(`Extracted ${hookPacks.length} Hook Packs`);
+    // HARD RULE: Ensure at least one high intent_fit hook if available
+    const highIntentHooks = hookPacks.filter(hp => hp.scores?.intent_fit >= 0.75);
+    if (highIntentHooks.length === 0) {
+      // Check if there are any high-intent hooks we missed
+      const allHighIntent = (parsed.hook_packs || [])
+        .filter((hp: HookPack) => hp.scores?.intent_fit >= 0.75 && hp.scores?.identity_conf >= 0.5);
+      if (allHighIntent.length > 0) {
+        // Replace lowest overall hook with highest intent_fit hook
+        hookPacks = hookPacks.slice(0, 2);
+        hookPacks.push(allHighIntent[0]);
+        hookPacks.sort((a: HookPack, b: HookPack) => (b.scores?.overall || 0) - (a.scores?.overall || 0));
+      }
+    }
+    
+    console.log(`Extracted ${hookPacks.length} Hook Packs (${highIntentHooks.length} high-intent)`);
     return hookPacks;
   } catch (e) {
     console.error('Failed to extract hook packs:', e);
@@ -766,29 +1076,21 @@ async function exaSearchWithContent(query: string, exaApiKey: string, numResults
 // ============= FIRECRAWL ENRICHMENT =============
 
 function isContentAbstract(text: string): boolean {
-  // Content is "abstract" if it's short or lacks concrete indicators
   const wordCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
   
-  // Too short - definitely needs enrichment
   if (wordCount < 200) return true;
   
-  // Check for concrete evidence indicators
   const concreteIndicators = [
-    // Direct quotes
-    /[""][^""]{20,}[""]/, // Quoted text of 20+ chars
-    /'[^']{20,}'/, // Single-quoted text
-    // Named artifacts
+    /[""][^""]{20,}[""]/,
+    /'[^']{20,}'/,
     /\b(podcast|interview|talk|keynote|essay|article|book|paper)\b.*["'][^"']+["']/i,
-    // Specific numbers/dates
     /\b(in \d{4}|january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}/i,
     /\$[\d.,]+\s*(million|billion|M|B)/i,
-    // First person statements
     /\b(I think|I believe|we decided|I realized|we learned|I said|I wrote)\b/i,
   ];
   
   const hasConcreteEvidence = concreteIndicators.some(pattern => pattern.test(text));
   
-  // If medium-length but no concrete evidence, still abstract
   if (wordCount < 500 && !hasConcreteEvidence) return true;
   
   return false;
@@ -850,7 +1152,6 @@ async function enrichAbstractCandidates(
   let enrichmentCount = 0;
   
   for (const candidate of eligibleCandidates) {
-    // Check if content is abstract and needs enrichment
     if (isContentAbstract(candidate.text) && enrichmentCount < maxEnrichments) {
       console.log(`Content abstract for ${candidate.url}, attempting Firecrawl enrichment`);
       
@@ -859,17 +1160,15 @@ async function enrichAbstractCandidates(
       if (enrichedContent && enrichedContent.length > candidate.text.length) {
         enrichedCandidates.push({
           ...candidate,
-          text: enrichedContent.substring(0, 8000), // Cap at 8k chars
+          text: enrichedContent.substring(0, 8000),
           reasons: [...candidate.reasons, 'ENRICHED: Firecrawl fetched full content'],
         });
         enrichmentCount++;
         console.log(`Enriched ${candidate.url}: ${candidate.text.length} -> ${enrichedContent.length} chars`);
       } else {
-        // Keep original if enrichment failed
         enrichedCandidates.push(candidate);
       }
     } else {
-      // Content is concrete enough, keep as-is
       enrichedCandidates.push(candidate);
     }
   }
@@ -995,9 +1294,11 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     }
   }
 
-  const trimmedBody = body.trimEnd();
-  if (!trimmedBody.endsWith('Best,')) {
-    errors.push('Body must end with exactly "Best," and nothing after');
+  if (bodyLines.length > 0) {
+    const lastLine = bodyLines[bodyLines.length - 1];
+    if (lastLine !== 'Best,') {
+      errors.push('Body must end with exactly "Best," and nothing after');
+    }
   }
 
   if (hasEmDash(body)) {
@@ -1072,10 +1373,11 @@ function getAffiliationTypeLabel(type: string): string {
   return labels[type] || type;
 }
 
-// ============= V2 RESEARCH PIPELINE =============
+// ============= V2 RESEARCH PIPELINE (INTENT-DRIVEN) =============
 
 interface V2ResearchResult {
   hookPacks: HookPack[];
+  senderIntentProfile: SenderIntentProfile | null;
   identityFingerprint: IdentityFingerprint | null;
   bridgeHypotheses: BridgeHypothesis[];
   candidateUrls: CandidateUrl[];
@@ -1091,13 +1393,27 @@ async function performV2Research(
   recipientRole: string,
   reachingOutBecause: string,
   credibilityStory: string,
+  askType: AskType,
   exaApiKey: string,
   LOVABLE_API_KEY: string
 ): Promise<V2ResearchResult> {
-  console.log('=== V2 Research Pipeline ===');
+  console.log('=== V2 Intent-Driven Research Pipeline ===');
   
   const queriesUsed: string[] = [];
   let allExaResults: ExaResult[] = [];
+  
+  // ============= STAGE 0: Extract Sender Intent Profile =============
+  const intentProfile = await extractSenderIntentProfile(
+    reachingOutBecause,
+    credibilityStory,
+    askType,
+    LOVABLE_API_KEY
+  );
+  
+  console.log('Sender Intent Profile:', {
+    primary_theme: intentProfile.primary_theme,
+    must_include_terms: intentProfile.must_include_terms.slice(0, 5),
+  });
   
   // ============= STAGE 1A: High-precision identity search =============
   console.log('=== Stage 1A: Identity Search ===');
@@ -1142,6 +1458,7 @@ async function performV2Research(
     console.log('STOPPING: Identity confidence too low');
     return {
       hookPacks: [],
+      senderIntentProfile: intentProfile,
       identityFingerprint: fingerprint,
       bridgeHypotheses: [],
       candidateUrls: [],
@@ -1158,16 +1475,18 @@ async function performV2Research(
     credibilityStory,
     recipientRole,
     recipientCompany,
+    intentProfile,
     LOVABLE_API_KEY
   );
   
-  console.log('Bridge hypotheses:', hypotheses.map(h => ({ type: h.type, keywords: h.keywords.slice(0, 3) })));
+  console.log('Bridge hypotheses:', hypotheses.map(h => ({ type: h.type, theme: h.theme, keywords: h.keywords.slice(0, 3) })));
   
-  // ============= STAGE 3: Candidate discovery =============
-  const { candidates, queriesUsed: discoveryQueries } = await discoverCandidates(
+  // ============= STAGE 3: Iterative Candidate Discovery =============
+  const { candidates, queriesUsed: discoveryQueries, scoredCandidates } = await discoverCandidatesV2(
     recipientName,
     fingerprint,
     hypotheses,
+    intentProfile,
     exaApiKey
   );
   
@@ -1179,6 +1498,9 @@ async function performV2Research(
   
   const candidateUrls: CandidateUrl[] = [];
   const eligibleCandidates: CandidateUrl[] = [];
+  
+  // Create a map of intent_fit scores from discovery
+  const intentFitMap = new Map(scoredCandidates.map(s => [s.url, s.intent_fit]));
   
   for (const c of candidates) {
     // Stage 4: Niche gate
@@ -1192,6 +1514,7 @@ async function performV2Research(
         passed_niche_gate: false,
         reasons: nicheResult.reasons,
         identity_locked: false,
+        intent_fit_score: intentFitMap.get(c.url) || 0,
       });
       continue;
     }
@@ -1206,6 +1529,7 @@ async function performV2Research(
       passed_niche_gate: true,
       reasons: [...nicheResult.reasons, ...identityResult.reasons],
       identity_locked: identityResult.locked,
+      intent_fit_score: intentFitMap.get(c.url) || 0,
     };
     
     candidateUrls.push(candidate);
@@ -1217,16 +1541,18 @@ async function performV2Research(
   
   console.log(`${eligibleCandidates.length} candidates passed niche gate + identity lock`);
   
+  // Sort eligible candidates by intent_fit_score (prioritize high-intent sources)
+  eligibleCandidates.sort((a, b) => (b.intent_fit_score || 0) - (a.intent_fit_score || 0));
+  
   // Early stop if we have enough
   if (eligibleCandidates.length >= 2) {
-    console.log('Early stop: enough eligible candidates');
+    console.log('Proceeding with eligible candidates');
   }
   
   // ============= STAGE 5.5: Firecrawl Enrichment =============
-  // For candidates that passed but have abstract/short content, fetch full content via Firecrawl
   const enrichedCandidates = await enrichAbstractCandidates(
-    eligibleCandidates.slice(0, 6), // Cap at 6 for enrichment
-    3 // Max 3 Firecrawl calls to limit latency/cost
+    eligibleCandidates.slice(0, 6),
+    3
   );
   
   // ============= STAGE 6: Hook Pack extraction =============
@@ -1234,14 +1560,16 @@ async function performV2Research(
     recipientName,
     recipientRole,
     recipientCompany,
-    enrichedCandidates, // Use enriched candidates
+    enrichedCandidates,
     hypotheses,
+    intentProfile,
     credibilityStory,
     LOVABLE_API_KEY
   );
   
   return {
     hookPacks,
+    senderIntentProfile: intentProfile,
     identityFingerprint: fingerprint,
     bridgeHypotheses: hypotheses,
     candidateUrls,
@@ -1335,11 +1663,11 @@ serve(async (req) => {
       );
     }
 
-    // ============= V2 RESEARCH PIPELINE =============
+    // ============= V2 INTENT-DRIVEN RESEARCH PIPELINE =============
     let researchResult: V2ResearchResult | null = null;
     
     if (EXA_API_KEY) {
-      console.log('Starting V2 research pipeline...');
+      console.log('Starting V2 intent-driven research pipeline...');
       
       try {
         researchResult = await performV2Research(
@@ -1348,6 +1676,7 @@ serve(async (req) => {
           recipientRole,
           reachingOutBecause,
           credibilityStory,
+          askType,
           EXA_API_KEY,
           LOVABLE_API_KEY
         );
@@ -1379,24 +1708,31 @@ SHARED AFFILIATION (user-declared, use ONLY as last resort for "Like you," conne
 IMPORTANT: Only use this shared affiliation if no stronger craft/problem/constraint parallel exists.`;
     }
 
-    // Build Hook Packs section (V2)
+    // Build Hook Packs section with like_you_ingredients
     let hookPacksSection = '';
     if (researchResult && researchResult.hookPacks.length > 0) {
       hookPacksSection = `
-RESEARCHED HOOK PACKS (use one to create the "Like you," bridge):
+RESEARCHED HOOK PACKS (use these ingredients to craft the "Like you," bridge):
 ${researchResult.hookPacks.map((hp, i) => `
 ${i + 1}. CLAIM: ${hp.hook_fact.claim}
    Source: ${hp.hook_fact.source_url}
-   Evidence: "${hp.hook_fact.evidence}"
+   Evidence (${hp.hook_fact.evidence_type}): "${hp.hook_fact.evidence}"
    
-   SUGGESTED "Like you," LINE: "${hp.bridge.like_you_line}"
+   "LIKE YOU" INGREDIENTS:
+   - Shared axis: ${hp.bridge.like_you_ingredients.shared_axis}
+   - Shared action: ${hp.bridge.like_you_ingredients.shared_action}
+   - Shared stakes: ${hp.bridge.like_you_ingredients.shared_stakes}
+   ${hp.bridge.like_you_ingredients.optional_phrases?.length ? `- Optional phrases: ${hp.bridge.like_you_ingredients.optional_phrases.join(', ')}` : ''}
+   
    Bridge angle: ${hp.bridge.bridge_angle}
+   Intent theme: ${hp.bridge.intent_theme}
    Why relevant: ${hp.bridge.why_relevant}
    
-   Quality scores: identity=${hp.scores.identity_conf.toFixed(2)}, non_generic=${hp.scores.non_generic.toFixed(2)}, bridgeability=${hp.scores.bridgeability.toFixed(2)}, overall=${hp.scores.overall.toFixed(2)}
+   Scores: identity=${hp.scores.identity_conf.toFixed(2)}, intent_fit=${hp.scores.intent_fit.toFixed(2)}, non_generic=${hp.scores.non_generic.toFixed(2)}, overall=${hp.scores.overall.toFixed(2)}
 `).join('')}
 
-Use the suggested "Like you," line as inspiration or adapt it. Do not copy it verbatim if it doesn't flow naturally.`;
+Use the "LIKE YOU" INGREDIENTS to craft a natural "Like you," sentence. Combine shared_axis, shared_action, and shared_stakes fluidly.
+PRIORITIZE Hook Packs with high intent_fit scores—these align with what the sender is actually trying to accomplish.`;
     } else {
       hookPacksSection = `
 NO RESEARCHED HOOK PACKS AVAILABLE.
@@ -1418,10 +1754,12 @@ SENDER'S CONTEXT:
 - Asking for: ${getAskTypeLabel(askType)}
 - Reason for reaching out: ${reachingOutBecause}
 - Credibility story: ${credibilityStory}
+${researchResult?.senderIntentProfile ? `- Primary theme: ${researchResult.senderIntentProfile.primary_theme}` : ''}
 
 CRITICAL INSTRUCTIONS:
 - The email MUST include the exact phrase "Like you," (capital L, comma after) exactly once in the body
 - The "Like you," sentence should appear in the first or second paragraph
+- Use the "Like you ingredients" to craft a natural sentence, don't force all components
 - Priority for "Like you," bridge: craft/experience > problem space > constraints > shared institution
 - Make a specific ask related to "${getAskTypeLabel(askType)}"
 - Keep the body between 90-170 words
@@ -1517,6 +1855,7 @@ Only return the JSON, no other text.`;
     // Log analytics
     console.log('=== GENERATION ANALYTICS ===');
     console.log(`hook_packs: ${researchResult?.hookPacks.length || 0}`);
+    console.log(`intent_profile: ${researchResult?.senderIntentProfile?.primary_theme || 'none'}`);
     console.log(`exa_queries: ${researchResult?.queriesUsed.length || 0}`);
     console.log(`selected_sources: ${researchResult?.selectedSources.length || 0}`);
     console.log(`did_retry: ${enforcementResults.did_retry}`);
@@ -1588,6 +1927,7 @@ Only return the JSON, no other text.`;
     // Include debug info for test harness
     if (includeDebug && researchResult) {
       responsePayload.debug = {
+        senderIntentProfile: researchResult.senderIntentProfile,
         identityFingerprint: researchResult.identityFingerprint,
         bridgeHypotheses: researchResult.bridgeHypotheses,
         candidateUrls: researchResult.candidateUrls,
