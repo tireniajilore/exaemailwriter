@@ -296,6 +296,17 @@ const GENERIC_LIKE_YOU_PATTERNS = [
   "championing",
 ];
 
+// Banned verbs in "Like you," sentences - these make it sound like a mission statement
+const BANNED_LIKE_YOU_VERBS = [
+  "believe",
+  "think",
+  "care",
+  "passionate",
+  "focused",
+  "committed",
+  "want to",
+];
+
 // Corporate padding detection patterns
 const CORPORATE_PADDING_PHRASES = [
   "in the space",
@@ -1659,9 +1670,19 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     const likeYouSentence = extractSentenceWithLikeYou(body);
     if (likeYouSentence) {
       const lowerSentence = likeYouSentence.toLowerCase();
+      
+      // Check for generic patterns
       for (const pattern of GENERIC_LIKE_YOU_PATTERNS) {
         if (lowerSentence.includes(pattern)) {
           errors.push(`The "Like you," sentence contains generic phrase "${pattern}"`);
+          break;
+        }
+      }
+      
+      // Check for banned belief/value verbs - these make it sound like a mission statement
+      for (const verb of BANNED_LIKE_YOU_VERBS) {
+        if (lowerSentence.includes(verb)) {
+          errors.push(`The "Like you," sentence contains banned verb "${verb}" - express shared lived reality, not beliefs`);
           break;
         }
       }
