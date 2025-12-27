@@ -59,6 +59,8 @@ NEVER:
 * “Like you, I believe in innovation.”
 * “Like you, we share a commitment to…”
 If it sounds like a mission statement, rewrite.
+You may NOT use belief verbs (believe, think, care, passionate).
+
 
 FLOW OVER STRUCTURE (IMPORTANT)
 Do not write:
