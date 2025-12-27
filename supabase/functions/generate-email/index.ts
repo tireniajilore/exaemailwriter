@@ -205,10 +205,24 @@ interface HookPack {
 interface IdentityFingerprint {
   canonical_name: string;
   company: string;
+  company_variants?: string[]; // e.g. ["wealthfront", "wealthfront inc", "wealthfront.com"]
   role_keywords: string[];
   disambiguators: string[];
   confounders: { name: string; negative_keywords: string[] }[];
 }
+
+// NEW: Identity signals for confidence scoring
+interface IdentitySignals {
+  has_full_name: boolean;
+  has_last_name: boolean;
+  has_company: boolean;
+  has_disambiguator_t1: boolean;
+  has_disambiguator_t2: boolean;
+  has_role_paired: boolean; // role present AND some name present
+}
+
+// Identity confidence decision type
+type IdentityDecision = "PASS_HIGH" | "PASS_LOW" | "FAIL";
 
 // UPDATED: BridgeHypothesis without query_templates
 interface BridgeHypothesis {
@@ -243,7 +257,10 @@ interface CandidateUrl {
   passed_niche_gate: boolean;
   reasons: string[];
   identity_locked: boolean;
-  intent_fit_score?: number; // NEW
+  identity_confidence?: number; // NEW: 0-1 confidence score
+  identity_decision?: IdentityDecision; // NEW: decision threshold
+  identity_signals?: IdentitySignals; // NEW: detailed signals for debugging
+  intent_fit_score?: number;
 }
 
 interface EnforcementResults {
@@ -1069,51 +1086,230 @@ function applyNicheGate(url: string, title: string, snippet: string): { passed: 
   return { passed: false, reasons: ["REJECT: no eligible pattern found"] };
 }
 
-// ============= STAGE 5: IDENTITY LOCK ON CONTENT =============
+// ============= STAGE 5: IDENTITY CONFIDENCE SCORING =============
 
+// Utility: normalize text for matching
+function normalizeToken(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// Utility: unique array
+function uniq<T>(arr: T[]): T[] {
+  return Array.from(new Set(arr));
+}
+
+// Utility: check if string is a generic disambiguator
+function isGenericDisambiguator(s: string): boolean {
+  const generic = new Set([
+    "product manager",
+    "pm",
+    "founder",
+    "ceo",
+    "cto",
+    "coo",
+    "cfo",
+    "vp",
+    "director",
+    "software engineer",
+    "manager",
+    "fintech",
+    "startup",
+    "operator",
+    "executive",
+    "leader",
+    "tech",
+    "technology",
+    "engineering",
+    "product",
+  ]);
+  return generic.has(s);
+}
+
+// Build tiered disambiguators from fingerprint
+function buildDisambiguators(fp: IdentityFingerprint): { tier1: string[]; tier2: string[] } {
+  const t1: string[] = [];
+  const t2: string[] = [];
+
+  // Tier 1: company variants (safe / high-precision)
+  const company = fp.company?.trim();
+  if (company) {
+    t1.push(company);
+    t1.push(`${company} inc`);
+    t1.push(`${company}.com`);
+  }
+  (fp.company_variants ?? []).forEach(v => t1.push(v));
+
+  // Include LLM disambiguators, bucket them based on specificity
+  (fp.disambiguators ?? []).forEach(d => {
+    const nd = normalizeToken(d);
+    // Long-ish and not generic => tier 1; else tier 2
+    if (nd.length >= 8 && !isGenericDisambiguator(nd)) {
+      t1.push(d);
+    } else {
+      t2.push(d);
+    }
+  });
+
+  // Tier 2 fallback: role keywords (only useful with pairing rule)
+  (fp.role_keywords ?? []).forEach(r => t2.push(r));
+
+  return {
+    tier1: uniq(t1.map(normalizeToken)).filter(x => x.length > 3),
+    tier2: uniq(t2.map(normalizeToken)).filter(x => x.length > 3),
+  };
+}
+
+// Check if text contains any of the tokens
+function containsAny(text: string, tokens: string[]): boolean {
+  return tokens.some(t => t.length > 3 && text.includes(t));
+}
+
+// Compute identity signals from text and fingerprint
+function computeIdentitySignals(textRaw: string, fp: IdentityFingerprint): IdentitySignals {
+  const text = normalizeToken(textRaw);
+  const fullName = normalizeToken(fp.canonical_name);
+  const nameParts = fullName.split(" ");
+  const lastName = nameParts.slice(-1)[0];
+
+  const dis = buildDisambiguators(fp);
+
+  const has_full_name = text.includes(fullName);
+  const has_last_name = lastName.length > 2 && text.includes(lastName);
+
+  const has_company = fp.company
+    ? text.includes(normalizeToken(fp.company))
+    : false;
+
+  const has_disambiguator_t1 = containsAny(text, dis.tier1);
+  const has_disambiguator_t2_raw = containsAny(text, dis.tier2);
+
+  // Pairing rule: role/disambiguator tier2 only "counts" if name present
+  const name_present = has_full_name || has_last_name;
+  const has_role_paired = name_present && containsAny(text, (fp.role_keywords ?? []).map(normalizeToken));
+
+  return {
+    has_full_name,
+    has_last_name,
+    has_company,
+    has_disambiguator_t1,
+    has_disambiguator_t2: name_present && has_disambiguator_t2_raw, // pairing rule applied
+    has_role_paired,
+  };
+}
+
+// Compute identity confidence score from signals
+function computeIdentityConfidence(signals: IdentitySignals): { score: number; decision: IdentityDecision } {
+  let score = 0;
+
+  // Name signals (max 0.55)
+  if (signals.has_full_name) score += 0.55;
+  else if (signals.has_last_name) score += 0.15;
+
+  // Company signal (0.30)
+  if (signals.has_company) score += 0.30;
+
+  // Tiered disambiguators
+  if (signals.has_disambiguator_t1) score += 0.20;
+  if (signals.has_disambiguator_t2) score += 0.10;
+
+  // Role only counts if paired with name
+  if (signals.has_role_paired) score += 0.10;
+
+  // Cap at 1.0
+  score = Math.min(1, score);
+
+  // Decision thresholds
+  const decision: IdentityDecision =
+    score >= 0.75 ? "PASS_HIGH" :
+    score >= 0.45 ? "PASS_LOW" :
+    "FAIL";
+
+  return { score, decision };
+}
+
+// Check for confounder keywords (negative signal)
+function checkConfounders(text: string, fingerprint: IdentityFingerprint): { hasConfounder: boolean; confounderReason: string | null } {
+  const lowerText = text.toLowerCase();
+  for (const confounder of fingerprint.confounders || []) {
+    for (const negKeyword of confounder.negative_keywords || []) {
+      if (negKeyword.length > 3 && lowerText.includes(negKeyword.toLowerCase())) {
+        return {
+          hasConfounder: true,
+          confounderReason: `Confounder keyword "${negKeyword}" found (may be ${confounder.name})`,
+        };
+      }
+    }
+  }
+  return { hasConfounder: false, confounderReason: null };
+}
+
+// Main identity check function (replaces old checkIdentityLock)
+function checkIdentityConfidence(
+  text: string,
+  recipientName: string,
+  fingerprint: IdentityFingerprint,
+): { 
+  locked: boolean; 
+  score: number;
+  decision: IdentityDecision;
+  signals: IdentitySignals;
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+
+  // First check for confounders (hard fail)
+  const { hasConfounder, confounderReason } = checkConfounders(text, fingerprint);
+  if (hasConfounder && confounderReason) {
+    const emptySignals: IdentitySignals = {
+      has_full_name: false,
+      has_last_name: false,
+      has_company: false,
+      has_disambiguator_t1: false,
+      has_disambiguator_t2: false,
+      has_role_paired: false,
+    };
+    return {
+      locked: false,
+      score: 0,
+      decision: "FAIL",
+      signals: emptySignals,
+      reasons: [`Identity FAIL: ${confounderReason}`],
+    };
+  }
+
+  // Compute signals and confidence
+  const signals = computeIdentitySignals(text, fingerprint);
+  const { score, decision } = computeIdentityConfidence(signals);
+
+  // Build reasons for debugging
+  if (signals.has_full_name) reasons.push("Full name found");
+  else if (signals.has_last_name) reasons.push("Last name found");
+  else reasons.push("Name not found");
+
+  if (signals.has_company) reasons.push("Company found");
+  if (signals.has_disambiguator_t1) reasons.push("Tier1 disambiguator found");
+  if (signals.has_disambiguator_t2) reasons.push("Tier2 disambiguator found (paired)");
+  if (signals.has_role_paired) reasons.push("Role keyword found (paired with name)");
+
+  reasons.push(`Score: ${score.toFixed(2)} → ${decision}`);
+
+  return {
+    locked: decision !== "FAIL",
+    score,
+    decision,
+    signals,
+    reasons,
+  };
+}
+
+// Legacy wrapper for backward compatibility
 function checkIdentityLock(
   text: string,
   recipientName: string,
   fingerprint: IdentityFingerprint,
 ): { locked: boolean; reasons: string[] } {
-  const lowerText = text.toLowerCase();
-  const reasons: string[] = [];
-
-  // Check for recipient name (or canonical variant)
-  const nameParts = recipientName.toLowerCase().split(/\s+/);
-  const canonicalParts = fingerprint.canonical_name.toLowerCase().split(/\s+/);
-  const allNameVariants = [...new Set([...nameParts, ...canonicalParts])];
-
-  const hasName = allNameVariants.some((part) => part.length > 2 && lowerText.includes(part));
-  if (!hasName) {
-    return { locked: false, reasons: ["Identity lock failed: name not found in content"] };
-  }
-  reasons.push("Name found in content");
-
-  // Check for company OR disambiguator
-  const hasCompany = lowerText.includes(fingerprint.company.toLowerCase());
-  const hasDisambiguator = fingerprint.disambiguators.some((d) => d.length > 3 && lowerText.includes(d.toLowerCase()));
-
-  if (!hasCompany && !hasDisambiguator) {
-    return { locked: false, reasons: ["Identity lock failed: company/disambiguator not found"] };
-  }
-
-  if (hasCompany) reasons.push("Company found in content");
-  if (hasDisambiguator) reasons.push("Disambiguator found in content");
-
-  // Check for confounder keywords (negative signal)
-  for (const confounder of fingerprint.confounders) {
-    for (const negKeyword of confounder.negative_keywords) {
-      if (negKeyword.length > 3 && lowerText.includes(negKeyword.toLowerCase())) {
-        return {
-          locked: false,
-          reasons: [`Identity lock failed: confounder keyword "${negKeyword}" found (may be ${confounder.name})`],
-        };
-      }
-    }
-  }
-
-  return { locked: true, reasons };
+  const result = checkIdentityConfidence(text, recipientName, fingerprint);
+  return { locked: result.locked, reasons: result.reasons };
 }
 
 // ============= STAGE 6: HOOK PACK EXTRACTION (UPDATED) =============
@@ -2151,8 +2347,12 @@ async function performV2Research(
   queriesUsed.push(...discoveryQueries);
   allExaResults = [...allExaResults, ...candidates];
 
-  // ============= STAGE 4 & 5: Niche gate + Identity lock =============
-  console.log("=== Stage 4 & 5: Niche Gate + Identity Lock ===");
+  // ============= STAGE 4 & 5: Niche gate + Identity Confidence Scoring =============
+  console.log("=== Stage 4 & 5: Niche Gate + Identity Confidence Scoring ===");
+
+  // Log disambiguators once for debugging
+  const disambiguators = buildDisambiguators(fingerprint);
+  console.log(`[identity] Disambiguators tier1=${JSON.stringify(disambiguators.tier1)} tier2=${JSON.stringify(disambiguators.tier2)}`);
 
   const candidateUrls: CandidateUrl[] = [];
   const eligibleCandidates: CandidateUrl[] = [];
@@ -2160,11 +2360,18 @@ async function performV2Research(
   // Create a map of intent_fit scores from discovery
   const intentFitMap = new Map(scoredCandidates.map((s) => [s.url, s.intent_fit]));
 
+  // Track gate failure reasons for debugging
+  let nicheGateFailures = 0;
+  let identityFailures = 0;
+  let passHighCount = 0;
+  let passLowCount = 0;
+
   for (const c of candidates) {
     // Stage 4: Niche gate
     const nicheResult = applyNicheGate(c.url, c.title, c.snippet);
 
     if (!nicheResult.passed) {
+      nicheGateFailures++;
       candidateUrls.push({
         url: c.url,
         title: c.title,
@@ -2172,13 +2379,15 @@ async function performV2Research(
         passed_niche_gate: false,
         reasons: nicheResult.reasons,
         identity_locked: false,
+        identity_confidence: 0,
+        identity_decision: "FAIL",
         intent_fit_score: intentFitMap.get(c.url) || 0,
       });
       continue;
     }
 
-    // Stage 5: Identity lock
-    const identityResult = checkIdentityLock(c.text || c.snippet || "", recipientName, fingerprint);
+    // Stage 5: Identity confidence scoring (replaces binary lock)
+    const identityResult = checkIdentityConfidence(c.text || c.snippet || "", recipientName, fingerprint);
 
     const candidate: CandidateUrl = {
       url: c.url,
@@ -2187,17 +2396,41 @@ async function performV2Research(
       passed_niche_gate: true,
       reasons: [...nicheResult.reasons, ...identityResult.reasons],
       identity_locked: identityResult.locked,
+      identity_confidence: identityResult.score,
+      identity_decision: identityResult.decision,
+      identity_signals: identityResult.signals,
       intent_fit_score: intentFitMap.get(c.url) || 0,
     };
 
     candidateUrls.push(candidate);
 
+    // Log each candidate's identity check for debugging
+    console.log(`[identity] url=${c.url.substring(0, 60)}... score=${identityResult.score.toFixed(2)} decision=${identityResult.decision}`);
+
     if (identityResult.locked) {
       eligibleCandidates.push(candidate);
+      if (identityResult.decision === "PASS_HIGH") passHighCount++;
+      else if (identityResult.decision === "PASS_LOW") passLowCount++;
+    } else {
+      identityFailures++;
     }
   }
 
-  console.log(`${eligibleCandidates.length} candidates passed niche gate + identity lock`);
+  // Log gate breakdown summary
+  console.log(`Gate breakdown: ${nicheGateFailures} failed niche gate, ${identityFailures} failed identity confidence`);
+  console.log(`Passed: ${passHighCount} PASS_HIGH, ${passLowCount} PASS_LOW`);
+  console.log(`${eligibleCandidates.length} candidates passed niche gate + identity check`);
+
+  // Log sample failures for debugging (only if we have failures)
+  if (identityFailures > 0) {
+    const sampleFailures = candidateUrls
+      .filter(c => c.passed_niche_gate && !c.identity_locked)
+      .slice(0, 3);
+    console.log("Sample identity failures:");
+    sampleFailures.forEach(f => {
+      console.log(`  - ${f.url.substring(0, 50)}... signals=${JSON.stringify(f.identity_signals)}`);
+    });
+  }
 
   // Sort eligible candidates by intent_fit_score (prioritize high-intent sources)
   eligibleCandidates.sort((a, b) => (b.intent_fit_score || 0) - (a.intent_fit_score || 0));
