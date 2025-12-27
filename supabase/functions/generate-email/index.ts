@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ============= DEPLOY VERSION - BUMP THIS ON EACH DEPLOY =============
-const DEPLOY_VERSION = "2025-12-27b";
+const DEPLOY_VERSION = "2025-12-27c-exa-research";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -12,11 +12,10 @@ const corsHeaders = {
 
 const PROMPT_VERSION = "v9.0-voice-first";
 const MODEL_NAME = "google/gemini-2.5-flash";
-const RESEARCH_MODEL_NAME = "google/gemini-2.5-flash";
 
-// ============= LINKEDIN ENRICHMENT CONFIG =============
-const LINKEDIN_ENRICHMENT_ENABLED = Deno.env.get("LINKEDIN_ENRICHMENT_ENABLED") !== "false"; // defaults to true
-const LINKEDIN_IDENTITY_THRESHOLD = parseFloat(Deno.env.get("LINKEDIN_IDENTITY_THRESHOLD") || "0.7");
+// Exa Research config
+const EXA_RESEARCH_TIMEOUT_MS = 180000; // 3 minutes
+const EXA_RESEARCH_POLL_INTERVAL_MS = 3000; // 3 seconds
 
 // Helper to build response headers with deploy version and generation ID
 function buildResponseHeaders(generationId: string): Record<string, string> {
@@ -27,6 +26,7 @@ function buildResponseHeaders(generationId: string): Record<string, string> {
     "x-generation-id": generationId,
   };
 }
+
 // ============= SUPER PROMPT (Voice-First v9) =============
 const SUPER_PROMPT = `
 
@@ -34,11 +34,11 @@ You write cold emails that read like a single, continuous thought from a real pe
 The email should feel like someone thinking out loud to a respected peer: warm, specific, human, and slightly under-polished.
 
 CORE MENTAL MODEL (THIS OVERRIDES ALL OTHER RULES)
-Do not assemble an email. Explain why you’re writing.
-Write as if you’re answering this question in one flowing explanation:
-“Why should this person care about this message right now?”
+Do not assemble an email. Explain why you're writing.
+Write as if you're answering this question in one flowing explanation:
+"Why should this person care about this message right now?"
 Everything in the email should logically follow from that explanation.
-If a sentence doesn’t naturally lead to the next one, rewrite.
+If a sentence doesn't naturally lead to the next one, rewrite.
 
 BEFORE WRITING THE EMAIL:
 In 2–3 sentences, silently explain to yourself:
@@ -50,31 +50,31 @@ Do NOT structure the email. Let it flow.
 
 YOUR PERSONA
 You are a real person with a real reason for reaching out.
-You respect the recipient. You are not pitching. You are not performing. You are not trying to sound impressive.
-Write like you’d text someone you admire but don’t know yet.
+You respect the recipient. You are not pitching. You are not performing. You are not trying to sound impressive.
+Write like you'd text someone you admire but don't know yet.
 
 THE ONE NON-NEGOTIABLE RULE
 The email MUST contain exactly one instance of:
-“Like you,” (capital L, comma after)
-This phrase is not decoration. It should feel inevitable, not inserted.
-Rule: If the sentence still works without “Like you,” rewrite it until it doesn’t.
+"Like you," (capital L, comma after)
+This phrase is not decoration. It should feel inevitable, not inserted.
+Rule: If the sentence still works without "Like you," rewrite it until it doesn't.
 
-HOW “LIKE YOU” SHOULD FUNCTION
-“Like you,” must express a shared lived reality, not a belief or value.
+HOW "LIKE YOU" SHOULD FUNCTION
+"Like you," must express a shared lived reality, not a belief or value.
 It should connect:
-* what they’ve done
-* to what you’ve done
+* what they've done
+* to what you've done
 * and why that overlap matters now
 GOOD:
-* “Like you, I’m now dedicated to storytelling as an avenue for inspiring black boys and girls.”
-* “Like you, I want to write about the small human actions that transform hearts and minds”
-* “Like you, I want to devote my career to applying technology to improving conservation.”
-* “Like you, I was born and raised in Italy, but I built my career outside our country.”
-* “Like you, I am often told I bite off more than I can chew”
+* "Like you, I'm now dedicated to storytelling as an avenue for inspiring black boys and girls."
+* "Like you, I want to write about the small human actions that transform hearts and minds"
+* "Like you, I want to devote my career to applying technology to improving conservation."
+* "Like you, I was born and raised in Italy, but I built my career outside our country."
+* "Like you, I am often told I bite off more than I can chew"
 NEVER:
-* “Like you, I care about inclusion.”
-* “Like you, I believe in innovation.”
-* “Like you, we share a commitment to…”
+* "Like you, I care about inclusion."
+* "Like you, I believe in innovation."
+* "Like you, we share a commitment to…"
 If it sounds like a mission statement, rewrite.
 You may NOT use belief verbs (believe, think, care, passionate).
 
@@ -93,21 +93,21 @@ The email should feel like ONE thought, not three blocks.
 OPENING RULE (STILL STRICT)
 The first sentence after the greeting must contain new information.
 Default to sender-side news:
-* what you’re building
-* what you’re organizing
-* what you’re offering
-* a concrete detail from their work (the detail itself, not “I read…”)
+* what you're building
+* what you're organizing
+* what you're offering
+* a concrete detail from their work (the detail itself, not "I read…")
 ALLOWED:
-* “Stanford’s Black Business Conference is coming back in October.”
-* “We’re building a payments tool focused on LatAm gig workers.”
-* “That stat in your Afrotech piece — 40% lacking device access — stuck with me.”
+* "Stanford's Black Business Conference is coming back in October."
+* "We're building a payments tool focused on LatAm gig workers."
+* "That stat in your Afrotech piece — 40% lacking device access — stuck with me."
 BANNED AS FIRST SENTENCE:
-* “I read…”
-* “I saw…”
-* “I wanted to reach out…”
-* “This might be out of the blue…”
-* “My name is…”
-* “I’m a…”
+* "I read…"
+* "I saw…"
+* "I wanted to reach out…"
+* "This might be out of the blue…"
+* "My name is…"
+* "I'm a…"
 
 LANGUAGE + TONE (UNCHANGED, BUT SIMPLIFIED)
 * Simple words beat impressive ones
@@ -116,43 +116,43 @@ LANGUAGE + TONE (UNCHANGED, BUT SIMPLIFIED)
 * Warm, but not emotional
 * Casual, but not sloppy
 * No corporate polish
-If a 12-year-old wouldn’t say it, rewrite it.
+If a 12-year-old wouldn't say it, rewrite it.
 
 CREDIBILITY (SUBTLE)
 Credibility should feel incidental, not announced.
 Prefer:
-* “I’ve been working on X for a few years” Over:
-* “I bring extensive experience in X”
+* "I've been working on X for a few years" Over:
+* "I bring extensive experience in X"
 No titles. No awards. No flexing.
 
-SHOW, DON’T TELL (MANDATORY)
-Never describe their qualities. Point to something concrete instead.
-* BAD: “Your leadership demonstrated vision”
-* GOOD: “The Activision deal took two years — that kind of patience is rare.”
+SHOW, DON'T TELL (MANDATORY)
+Never describe their qualities. Point to something concrete instead.
+* BAD: "Your leadership demonstrated vision"
+* GOOD: "The Activision deal took two years — that kind of patience is rare."
 
 TEXTURE RULES (USE SPARINGLY)
 * One-line paragraphs are fine
 * A single specific detail beats three generic ones
-* Don’t explain who they are to them
+* Don't explain who they are to them
 * Ask one real, answerable question
 
 LENGTH
-Readable in under 20 seconds. If you can say it in 80 words, don’t stretch to 120.
+Readable in under 20 seconds. If you can say it in 80 words, don't stretch to 120.
 
 ENDING + ASK
 The ask should feel like the natural conclusion of the explanation — not a switch in tone.
 Prefer:
-* “Would you be up for a quick call?”
-* “Any chance you’d want to talk about it?”
+* "Would you be up for a quick call?"
+* "Any chance you'd want to talk about it?"
 Avoid:
 * formality
 * hedging
-* “no pressure” language
+* "no pressure" language
 
 HARD RULES (AUTOMATIC REJECTION IF VIOLATED)
-* “Like you,” appears exactly once
+* "Like you," appears exactly once
 * No em-dashes
-* No clichés (“reaching out because”, “would love to connect”, etc.)
+* No clichés ("reaching out because", "would love to connect", etc.)
 * No invented research
 * No résumé summaries
 * End with exactly:
@@ -161,10 +161,10 @@ Nothing after.
 
 FINAL CHECK — READ ALOUD
 
-Before returning the email, read it as if you’re saying it out loud to a real person.
+Before returning the email, read it as if you're saying it out loud to a real person.
 
 If any sentence:
-- sounds like something you wouldn’t say in a normal conversation
+- sounds like something you wouldn't say in a normal conversation
 - feels polite but empty
 - sounds like a press release, slide deck, or LinkedIn post
 
@@ -179,6 +179,7 @@ Do this once. Then return the final email only.
 type AskType = "chat" | "feedback" | "referral" | "job" | "other";
 type BridgeAngle = "domain" | "value" | "tradeoff" | "artifact" | "inflection" | "shared-affiliation";
 type EvidenceType = "quote" | "named_initiative" | "described_decision" | "named_artifact" | "public_stance";
+type IdentityDecision = "PASS_HIGH" | "PASS_LOW" | "FAIL";
 
 interface ValidationResult {
   valid: boolean;
@@ -188,15 +189,13 @@ interface ValidationResult {
   clicheCount: number;
 }
 
-// NEW: LikeYouIngredients replaces like_you_line
 interface LikeYouIngredients {
-  shared_axis: string; // "building an inclusive leadership pipeline"
-  shared_action: string; // "convening leaders / running programs / investing"
-  shared_stakes: string; // "who gets opportunity next"
-  optional_phrases?: string[]; // tiny set, optional
+  shared_axis: string;
+  shared_action: string;
+  shared_stakes: string;
+  optional_phrases?: string[];
 }
 
-// UPDATED: HookPack with like_you_ingredients and intent_fit
 interface HookPack {
   hook_fact: {
     claim: string;
@@ -208,91 +207,35 @@ interface HookPack {
     bridge_angle: BridgeAngle;
     why_relevant: string;
     like_you_ingredients: LikeYouIngredients;
-    intent_theme: string; // which sender theme it supports
+    intent_theme: string;
   };
   scores: {
     identity_conf: number;
     non_generic: number;
-    intent_fit: number; // NEW - critical
+    intent_fit: number;
     bridgeability: number;
     overall: number;
   };
 }
 
-interface IdentityFingerprint {
-  canonical_name: string;
-  company: string;
-  company_variants?: string[]; // e.g. ["wealthfront", "wealthfront inc", "wealthfront.com"]
-  role_keywords: string[];
-  disambiguators: string[];
-  confounders: { name: string; negative_keywords: string[] }[];
-  // NEW: LinkedIn-derived signals
-  linkedin_education?: string[]; // e.g. ["Stanford MBA", "MIT"]
-  linkedin_past_companies?: string[]; // e.g. ["McKinsey", "Google"]
-  linkedin_skills?: string[];
-  linkedin_url?: string;
-}
-
-// LinkedIn profile signals extracted from scraping
-interface LinkedInSignals {
+interface ProfileSummary {
+  current_role: string;
+  current_company: string;
   education: string[];
   past_companies: string[];
   skills: string[];
-  certifications: string[];
-  headline?: string;
-  profile_url: string;
+  career_trajectory?: string;
+  company_context?: string;
+  likely_interests: string[];
+  source: "linkedin" | "fingerprint" | "hypothesis" | "mixed" | "exa_research";
 }
 
-// NEW: Identity signals for confidence scoring
-interface IdentitySignals {
-  has_full_name: boolean;
-  has_last_name: boolean;
-  has_company: boolean;
-  has_disambiguator_t1: boolean;
-  has_disambiguator_t2: boolean;
-  has_role_paired: boolean; // role present AND some name present
-}
-
-// Identity confidence decision type
-type IdentityDecision = "PASS_HIGH" | "PASS_LOW" | "FAIL";
-
-// UPDATED: BridgeHypothesis without query_templates
-interface BridgeHypothesis {
-  type: "domain" | "value" | "tradeoff";
-  theme: string; // ties back to intent theme
-  keywords: string[]; // 6–12
-  proof_target: string; // what counts as proof
-  evidence_types: EvidenceType[]; // preferred evidence types
-}
-
-// NEW: SenderIntentProfile - the missing primitive
 interface SenderIntentProfile {
-  primary_theme: string; // e.g. "inclusion / Black leadership pipeline"
-  secondary_themes: string[]; // optional
-  must_include_terms: string[]; // 6–12 terms
-  avoid_terms: string[]; // 4–10 terms (optional)
-  preferred_evidence_types: EvidenceType[]; // ranked
-}
-
-interface ExaResult {
-  url: string;
-  title: string;
-  snippet: string;
-  text?: string;
-  score?: number;
-}
-
-interface CandidateUrl {
-  url: string;
-  title: string;
-  text: string;
-  passed_niche_gate: boolean;
-  reasons: string[];
-  identity_locked: boolean;
-  identity_confidence?: number; // NEW: 0-1 confidence score
-  identity_decision?: IdentityDecision; // NEW: decision threshold
-  identity_signals?: IdentitySignals; // NEW: detailed signals for debugging
-  intent_fit_score?: number;
+  primary_theme: string;
+  secondary_themes: string[];
+  must_include_terms: string[];
+  avoid_terms: string[];
+  preferred_evidence_types: EvidenceType[];
 }
 
 interface EnforcementResults {
@@ -301,167 +244,512 @@ interface EnforcementResults {
   failures_retry: string[];
 }
 
-// ============= VALIDATION CONSTANTS =============
+// ============= EXA RESEARCH OUTPUT SCHEMA =============
+// This schema is the HARD CONTRACT with Exa Research API.
+// All research logic is delegated to Exa via instructions.
 
-const BANNED_CLICHES = [
-  "i'm reaching out because",
-  "reaching out because",
-  "passionate about",
-  "would love to connect",
-  "keen interest",
-  "impact at scale",
-  "innovative solutions",
-  "extensive experience",
-  "impressed by",
-  "exceptional track record",
-  "exploring career paths",
-  "thought leadership",
-  "fostering",
-  "driving impact",
-  "deeply resonated",
-  "your incredible",
-  "your remarkable",
-  "your impressive",
-  "dedicated my career",
-  "share a commitment",
-  "believe in the importance",
-];
+const EXA_RESEARCH_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    identity: {
+      type: "object",
+      properties: {
+        canonical_name: { type: "string" },
+        company: { type: "string" },
+        role: { type: "string" },
+        confidence: { type: "number", minimum: 0, maximum: 1 },
+        decision: { type: "string", enum: ["PASS_HIGH", "PASS_LOW", "FAIL"] },
+        disambiguators: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+      required: ["canonical_name", "company", "confidence", "decision"],
+    },
+    hook_packs: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          hook_fact: {
+            type: "object",
+            properties: {
+              claim: { type: "string" },
+              source_url: { type: "string" },
+              evidence: { type: "string" },
+              evidence_type: {
+                type: "string",
+                enum: ["quote", "named_initiative", "described_decision", "named_artifact", "public_stance"],
+              },
+            },
+            required: ["claim", "source_url", "evidence", "evidence_type"],
+          },
+          bridge: {
+            type: "object",
+            properties: {
+              bridge_angle: {
+                type: "string",
+                enum: ["domain", "value", "tradeoff", "artifact", "inflection", "shared-affiliation"],
+              },
+              why_relevant: { type: "string" },
+              like_you_ingredients: {
+                type: "object",
+                properties: {
+                  shared_axis: { type: "string" },
+                  shared_action: { type: "string" },
+                  shared_stakes: { type: "string" },
+                  optional_phrases: {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                },
+                required: ["shared_axis", "shared_action", "shared_stakes"],
+              },
+              intent_theme: { type: "string" },
+            },
+            required: ["bridge_angle", "why_relevant", "like_you_ingredients", "intent_theme"],
+          },
+          scores: {
+            type: "object",
+            properties: {
+              identity_conf: { type: "number", minimum: 0, maximum: 1 },
+              non_generic: { type: "number", minimum: 0, maximum: 1 },
+              intent_fit: { type: "number", minimum: 0, maximum: 1 },
+              bridgeability: { type: "number", minimum: 0, maximum: 1 },
+              overall: { type: "number", minimum: 0, maximum: 1 },
+            },
+            required: ["identity_conf", "non_generic", "intent_fit", "bridgeability", "overall"],
+          },
+        },
+        required: ["hook_fact", "bridge", "scores"],
+      },
+    },
+    fallback: {
+      type: "object",
+      properties: {
+        mode: { type: "string", enum: ["sufficient", "minimal", "failed"] },
+        profile_summary: {
+          type: "object",
+          properties: {
+            current_role: { type: "string" },
+            current_company: { type: "string" },
+            education: { type: "array", items: { type: "string" } },
+            past_companies: { type: "array", items: { type: "string" } },
+            skills: { type: "array", items: { type: "string" } },
+            career_trajectory: { type: "string" },
+            likely_interests: { type: "array", items: { type: "string" } },
+          },
+          required: ["current_role", "current_company"],
+        },
+        reason: { type: "string" },
+      },
+      required: ["mode"],
+    },
+    citations: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          title: { type: "string" },
+        },
+        required: ["url"],
+      },
+    },
+    research_notes: { type: "string" },
+  },
+  required: ["identity", "hook_packs", "fallback", "citations"],
+};
 
-const GENERIC_LIKE_YOU_PATTERNS = [
-  "passionate about",
-  "think a lot about",
-  "reaching out",
-  "aligned with",
-  "resonates",
-  "inspired",
-  "keen to",
-  "deeply appreciate",
-  "share a commitment",
-  "believe in",
-  "dedicated to",
-  "driving",
-  "fostering",
-  "cultivating",
-  "championing",
-];
+// ============= EXA RESEARCH FUNCTIONS =============
 
-// Banned verbs in "Like you," sentences - these make it sound like a mission statement
-const BANNED_LIKE_YOU_VERBS = [
-  "believe",
-  "think",
-  "care",
-  "passionate",
-  "focused",
-  "committed",
-  "want to",
-];
+function buildExaResearchInstructions(
+  recipientName: string,
+  recipientCompany: string,
+  recipientRole: string,
+  reachingOutBecause: string,
+  credibilityStory: string,
+  askType: AskType,
+): string {
+  return `
+RESEARCH TASK: Find personalization hooks for a cold email to ${recipientName}, ${recipientRole} at ${recipientCompany}.
 
-// Corporate padding detection patterns
-const CORPORATE_PADDING_PHRASES = [
-  "in the space",
-  "thought leader",
-  "synergy",
-  "leverage",
-  "ecosystem",
-  "holistic",
-  "paradigm",
-  "stakeholder",
-  "best practices",
-  "core competencies",
-  "value proposition",
-  "move the needle",
-  "circle back",
-  "take this offline",
-];
+═══════════════════════════════════════════════════════════════════
+SENDER CONTEXT (USE THIS TO SCORE RELEVANCE)
+═══════════════════════════════════════════════════════════════════
 
-// Robotic/generic voice detection patterns
-const ROBOTIC_VOICE_PATTERNS = [
-  "i came across",
-  "i stumbled upon",
-  "i noticed that you",
-  "i was particularly struck",
-  "i was impressed",
-  "i was drawn to",
-  "i wanted to reach out",
-  "i hope this email finds you",
-  "i would love to",
-  "i'd love to connect",
-  "i believe we could",
-  "i think there's an opportunity",
-  "excited to explore",
-  "keen to discuss",
-  "eager to learn",
-  "looking forward to the opportunity",
-  "would be thrilled",
-  "would be honored",
-  "greatly appreciate",
-  "truly appreciate",
-  "deeply appreciate",
-  "resonate deeply",
-  "resonated with me",
-  "speaks to my",
-  "aligns perfectly",
-  "perfectly aligned",
-  "really stood out",
-  "caught my attention",
-  "piqued my interest",
-];
+Why sender is reaching out: "${reachingOutBecause}"
+Sender's credibility/story: "${credibilityStory}"
+Ask type: ${askType}
 
-// ============= QUERY TEMPLATE LIBRARY (STABLE) =============
+Your job is to find facts about ${recipientName} that CREATE A BRIDGE to the sender's purpose.
+Generic facts are useless. Intent-aligned facts are gold.
 
-// ============= RATE-LIMITED BATCH HELPER =============
+═══════════════════════════════════════════════════════════════════
+IDENTITY REQUIREMENTS (GATE 1 - MUST PASS BEFORE CONTINUING)
+═══════════════════════════════════════════════════════════════════
 
-async function batchWithRateLimit<T>(
-  tasks: (() => Promise<T>)[],
-  batchSize: number = 4, // Stay under 5/sec Exa limit
-  delayMs: number = 250, // 250ms between batches
-): Promise<T[]> {
-  const results: T[] = [];
+You must FIRST verify identity with high confidence:
+- Search for "${recipientName}" at "${recipientCompany}"
+- Look for LinkedIn, company about pages, press mentions
+- Extract disambiguators: specific projects, past companies, education, initiatives
+- Watch for confounders (other people with same name)
 
-  for (let i = 0; i < tasks.length; i += batchSize) {
-    const batch = tasks.slice(i, i + batchSize);
-    const batchResults = await Promise.all(batch.map((fn) => fn()));
-    results.push(...batchResults);
+IDENTITY DECISION:
+- PASS_HIGH (confidence >= 0.75): Full name + company confirmed, unique disambiguators found
+- PASS_LOW (confidence 0.45-0.74): Partial match, company confirmed but limited unique signals
+- FAIL (confidence < 0.45): Cannot reliably identify person, too many confounders
 
-    // Add delay between batches (except after the last one)
-    if (i + batchSize < tasks.length) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+If FAIL: Set fallback.mode = "failed" and stop. DO NOT fabricate hooks.
+
+═══════════════════════════════════════════════════════════════════
+EVIDENCE REQUIREMENTS (GATE 2 - WHAT COUNTS AS A HOOK)
+═══════════════════════════════════════════════════════════════════
+
+A valid hook_fact MUST include at least one:
+✓ QUOTE - Exact words they said (from interview, podcast, article)
+✓ NAMED_INITIATIVE - A specific named project/program they created or led
+✓ DESCRIBED_DECISION - A specific choice they made with concrete context
+✓ NAMED_ARTIFACT - A specific talk, article, book, paper by title
+✓ PUBLIC_STANCE - A clearly stated position on an issue
+
+AUTOMATICALLY REJECT:
+✗ "Known for..." / "Interest in..." / "Focus on..."
+✗ "Has been involved in..." / "Passionate about..."
+✗ Generic role descriptions or job history
+✗ Anything you cannot point to a specific URL
+
+═══════════════════════════════════════════════════════════════════
+INTENT-FIT SCORING (CRITICAL - THIS IS THE PRIORITY)
+═══════════════════════════════════════════════════════════════════
+
+Score each potential hook 0.0-1.0 on INTENT_FIT:
+- 1.0: Directly connects to sender's purpose (perfect bridge)
+- 0.7-0.9: Related topic that sender can credibly connect to
+- 0.4-0.6: Tangentially related, requires creative bridging
+- 0.0-0.3: Irrelevant to sender's purpose (do not include)
+
+ONLY include hooks with intent_fit >= 0.5
+PRIORITIZE hooks with intent_fit >= 0.7
+
+═══════════════════════════════════════════════════════════════════
+LIKE_YOU_INGREDIENTS (NOT A SENTENCE - RAW MATERIALS)
+═══════════════════════════════════════════════════════════════════
+
+For each hook, provide ingredients to craft a "Like you," sentence:
+- shared_axis: The domain/theme both sender and recipient care about
+- shared_action: What they both DO in that space
+- shared_stakes: Why it matters to both
+
+The email writer will combine these. Keep them concrete, not abstract.
+
+═══════════════════════════════════════════════════════════════════
+SUFFICIENCY RULES (DETERMINES FALLBACK MODE)
+═══════════════════════════════════════════════════════════════════
+
+Research is SUFFICIENT if:
+- 2+ hook_packs with overall >= 0.6
+- At least 1 hook with intent_fit >= 0.7
+- At least 1 hook has pointable evidence (quote, named_artifact, named_initiative)
+
+If SUFFICIENT: Set fallback.mode = "sufficient"
+
+If NOT SUFFICIENT but identity PASSED:
+- Set fallback.mode = "minimal"
+- Populate profile_summary with whatever you found (education, past companies, trajectory)
+- Populate likely_interests based on their role/company
+- Set fallback.reason explaining what's missing
+
+═══════════════════════════════════════════════════════════════════
+OUTPUT REQUIREMENTS
+═══════════════════════════════════════════════════════════════════
+
+Return structured JSON matching the provided schema:
+- identity: confidence scoring and decision
+- hook_packs: 0-3 valid hooks (sorted by overall score descending)
+- fallback: mode + profile_summary if needed
+- citations: all URLs you used
+- research_notes: brief notes on what you found/didn't find
+
+DO NOT:
+- Fabricate quotes or facts
+- Include hooks with identity_conf < 0.5
+- Include hooks with intent_fit < 0.5
+- Pad with generic observations
+- Return more than 3 hook_packs
+
+PRIORITIZE:
+- Intent alignment over generic impressiveness
+- Specific pointable evidence over vague claims
+- Honest "minimal" fallback over fabricated hooks
+`;
+}
+
+interface ExaResearchResult {
+  researchId: string;
+  status: "pending" | "completed" | "failed";
+  output?: {
+    identity: {
+      canonical_name: string;
+      company: string;
+      role?: string;
+      confidence: number;
+      decision: IdentityDecision;
+      disambiguators?: string[];
+    };
+    hook_packs: HookPack[];
+    fallback: {
+      mode: "sufficient" | "minimal" | "failed";
+      profile_summary?: ProfileSummary;
+      reason?: string;
+    };
+    citations: { url: string; title?: string }[];
+    research_notes?: string;
+  };
+  error?: string;
+  latency_ms?: number;
+}
+
+async function createExaResearchTask(
+  instructions: string,
+  exaApiKey: string,
+  generationId: string,
+): Promise<{ researchId: string; error?: string }> {
+  console.log(`[exa_research] Creating task generation_id=${generationId}`);
+
+  try {
+    const response = await fetch("https://api.exa.ai/research/v1", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${exaApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        instructions,
+        outputSchema: EXA_RESEARCH_OUTPUT_SCHEMA,
+        model: "exa-research", // Use standard model for cost efficiency
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[exa_research] Create task failed: status=${response.status} body=${errorText} generation_id=${generationId}`);
+      return { researchId: "", error: `Exa API error: ${response.status}` };
+    }
+
+    const data = await response.json();
+    console.log(`[exa_research] Task created: researchId=${data.researchId} generation_id=${generationId}`);
+    return { researchId: data.researchId };
+  } catch (e) {
+    console.error(`[exa_research] Create task error: ${e} generation_id=${generationId}`);
+    return { researchId: "", error: String(e) };
+  }
+}
+
+async function pollExaResearchTask(
+  researchId: string,
+  exaApiKey: string,
+  generationId: string,
+  timeoutMs: number = EXA_RESEARCH_TIMEOUT_MS,
+): Promise<ExaResearchResult> {
+  const startTime = Date.now();
+  let pollCount = 0;
+
+  while (Date.now() - startTime < timeoutMs) {
+    pollCount++;
+    
+    try {
+      const response = await fetch(`https://api.exa.ai/research/v1/${researchId}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${exaApiKey}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[exa_research] Poll failed: status=${response.status} body=${errorText} generation_id=${generationId}`);
+        return {
+          researchId,
+          status: "failed",
+          error: `Exa poll error: ${response.status}`,
+          latency_ms: Date.now() - startTime,
+        };
+      }
+
+      const data = await response.json();
+      console.log(`[exa_research] Poll ${pollCount}: status=${data.status} generation_id=${generationId}`);
+
+      if (data.status === "completed") {
+        const latency = Date.now() - startTime;
+        console.log(`[exa_research] Completed in ${latency}ms (${pollCount} polls) generation_id=${generationId}`);
+
+        // Extract parsed output
+        const parsed = data.result?.parsed;
+        if (!parsed) {
+          return {
+            researchId,
+            status: "failed",
+            error: "No parsed output in response",
+            latency_ms: latency,
+          };
+        }
+
+        return {
+          researchId,
+          status: "completed",
+          output: parsed,
+          latency_ms: latency,
+        };
+      }
+
+      if (data.status === "failed") {
+        return {
+          researchId,
+          status: "failed",
+          error: data.error || "Research task failed",
+          latency_ms: Date.now() - startTime,
+        };
+      }
+
+      // Still pending, wait and poll again
+      await new Promise((resolve) => setTimeout(resolve, EXA_RESEARCH_POLL_INTERVAL_MS));
+    } catch (e) {
+      console.error(`[exa_research] Poll error: ${e} generation_id=${generationId}`);
+      // Continue polling unless timeout
     }
   }
 
-  return results;
+  // Timeout
+  console.error(`[exa_research] Timeout after ${timeoutMs}ms generation_id=${generationId}`);
+  return {
+    researchId,
+    status: "failed",
+    error: `Research timeout after ${timeoutMs}ms`,
+    latency_ms: timeoutMs,
+  };
 }
 
-const TEMPLATE_LIBRARY = {
-  identity: [`"{name}" "{company}" bio`, `"{name}" "{company}" "{role}"`],
-  interview: [`"{name}" {company} interview {keyword}`, `"{name}" {company} podcast {keyword}`],
-  speech: [
-    `"{name}" {company} speech {keyword}`,
-    `"{name}" {company} keynote {keyword}`,
-    `"{name}" {company} talk {keyword}`,
-  ],
-  written: [
-    `"{name}" {company} essay {keyword}`,
-    `"{name}" {company} wrote {keyword}`,
-    `"{name}" {company} article {keyword}`,
-  ],
-  initiative: [
-    `"{name}" {company} initiative {keyword}`,
-    `"{name}" {company} program {keyword}`,
-    `"{name}" {company} launched {keyword}`,
-  ],
-  general: [`"{name}" {company} "{keyword}"`, `"{name}" {company} {keyword}`],
-  // NEW: Name-required queries (no company filter) for finding person-specific content
-  name_required: [
-    `"{name}" interview`,
-    `"{name}" podcast`,
-    `"{name}" keynote OR talk OR panel`,
-    `"{name}" wrote OR writes OR essay`,
-    `"{name}" says OR said OR believes`,
-  ],
-};
+// ============= V2 RESEARCH RESULT (OUTPUT CONTRACT) =============
 
-// ============= STAGE 0: SENDER INTENT PROFILE EXTRACTION =============
+interface V2ResearchResult {
+  hookPacks: HookPack[];
+  senderIntentProfile: SenderIntentProfile | null;
+  profileSummary?: ProfileSummary;
+  minimalResearch: boolean;
+  exaResearchId?: string;
+  exaResearchLatencyMs?: number;
+  citations: { url: string; title?: string }[];
+  identityDecision: IdentityDecision;
+  identityConfidence: number;
+  notes?: string;
+}
+
+async function performV2Research(
+  recipientName: string,
+  recipientCompany: string,
+  recipientRole: string,
+  reachingOutBecause: string,
+  credibilityStory: string,
+  askType: AskType,
+  exaApiKey: string,
+  LOVABLE_API_KEY: string,
+  generationId: string,
+): Promise<V2ResearchResult> {
+  console.log(`=== V2 Research (Exa Research API) === generation_id=${generationId}`);
+
+  // Stage 0: Extract sender intent profile (still useful for email generation context)
+  const intentProfile = await extractSenderIntentProfile(
+    reachingOutBecause,
+    credibilityStory,
+    askType,
+    LOVABLE_API_KEY,
+  );
+
+  console.log("Sender Intent Profile:", {
+    primary_theme: intentProfile.primary_theme,
+    must_include_terms: intentProfile.must_include_terms.slice(0, 5),
+  });
+
+  // Build instructions for Exa Research
+  const instructions = buildExaResearchInstructions(
+    recipientName,
+    recipientCompany,
+    recipientRole,
+    reachingOutBecause,
+    credibilityStory,
+    askType,
+  );
+
+  // Create Exa Research task
+  const { researchId, error: createError } = await createExaResearchTask(
+    instructions,
+    exaApiKey,
+    generationId,
+  );
+
+  if (createError || !researchId) {
+    console.error(`[exa_research] Failed to create task: ${createError} generation_id=${generationId}`);
+    return {
+      hookPacks: [],
+      senderIntentProfile: intentProfile,
+      minimalResearch: true,
+      citations: [],
+      identityDecision: "FAIL",
+      identityConfidence: 0,
+      notes: `Exa Research task creation failed: ${createError}`,
+    };
+  }
+
+  // Poll for completion
+  const result = await pollExaResearchTask(researchId, exaApiKey, generationId);
+
+  if (result.status === "failed" || !result.output) {
+    console.error(`[exa_research] Task failed: ${result.error} generation_id=${generationId}`);
+    return {
+      hookPacks: [],
+      senderIntentProfile: intentProfile,
+      minimalResearch: true,
+      exaResearchId: researchId,
+      exaResearchLatencyMs: result.latency_ms,
+      citations: [],
+      identityDecision: "FAIL",
+      identityConfidence: 0,
+      notes: `Exa Research failed: ${result.error}`,
+    };
+  }
+
+  // Consume the output (TRUST THE SCHEMA)
+  const output = result.output;
+  
+  console.log(`[exa_research] identity_decision=${output.identity.decision} confidence=${output.identity.confidence} hook_packs=${output.hook_packs.length} fallback_mode=${output.fallback.mode} generation_id=${generationId}`);
+
+  // Build profile summary from fallback if needed
+  let profileSummary: ProfileSummary | undefined;
+  if (output.fallback.mode === "minimal" && output.fallback.profile_summary) {
+    profileSummary = {
+      ...output.fallback.profile_summary,
+      source: "exa_research",
+    };
+  }
+
+  const isMinimalResearch = output.hook_packs.length === 0 || output.fallback.mode !== "sufficient";
+
+  return {
+    hookPacks: output.hook_packs,
+    senderIntentProfile: intentProfile,
+    profileSummary,
+    minimalResearch: isMinimalResearch,
+    exaResearchId: researchId,
+    exaResearchLatencyMs: result.latency_ms,
+    citations: output.citations,
+    identityDecision: output.identity.decision,
+    identityConfidence: output.identity.confidence,
+    notes: output.research_notes || output.fallback.reason,
+  };
+}
+
+// ============= STAGE 0: SENDER INTENT PROFILE (KEPT) =============
 
 async function extractSenderIntentProfile(
   reachingOutBecause: string,
@@ -480,44 +768,14 @@ SENDER CONTEXT:
 
 TASK:
 Extract a Sender Intent Profile that captures what the sender ACTUALLY cares about.
-This profile will be used to:
-1. Generate targeted search queries
-2. Score research results for relevance
-3. Ensure the "Like you," bridge aligns with the sender's real purpose
-
-RULES:
-- The primary_theme should be the core topic/domain the sender cares about (e.g., "inclusion / Black leadership pipeline", "AI safety", "enterprise sales transformation")
-- must_include_terms should be 6-12 specific terms likely to appear in relevant content about that theme
-- avoid_terms should be 4-10 terms that indicate content is NOT relevant to the sender's intent
-- Think about what would make a source MEANINGFUL for this sender, not just "about" the recipient
-
-EXAMPLES:
-
-If sender is inviting a speaker for Black leadership:
-{
-  "primary_theme": "inclusion / Black leadership pipeline",
-  "secondary_themes": ["talent development", "corporate diversity"],
-  "must_include_terms": ["inclusion", "diversity", "pipeline", "mentorship", "sponsorship", "talent", "underrepresented", "equity", "belonging", "access", "Black", "leadership"],
-  "avoid_terms": ["M&A", "acquisition", "revenue", "earnings", "stock", "quarterly"],
-  "preferred_evidence_types": ["quote", "named_initiative", "public_stance"]
-}
-
-If sender is a founder seeking feedback on AI product:
-{
-  "primary_theme": "AI product development / applied ML",
-  "secondary_themes": ["product-market fit", "technical architecture"],
-  "must_include_terms": ["AI", "machine learning", "product", "build", "ship", "launch", "iterate", "users", "feedback", "prototype"],
-  "avoid_terms": ["policy", "regulation", "lobbying", "political", "fundraising"],
-  "preferred_evidence_types": ["described_decision", "named_artifact", "quote"]
-}
 
 OUTPUT JSON ONLY:
 {
-  "primary_theme": "...",
-  "secondary_themes": ["...", "..."],
-  "must_include_terms": ["...", "...", ...],
-  "avoid_terms": ["...", ...],
-  "preferred_evidence_types": ["quote", "named_initiative", ...]
+  "primary_theme": "the core topic/domain (e.g., 'inclusion / Black leadership pipeline', 'AI safety')",
+  "secondary_themes": ["optional", "secondary", "themes"],
+  "must_include_terms": ["6-12 terms likely to appear in relevant content"],
+  "avoid_terms": ["4-10 terms that indicate irrelevant content"],
+  "preferred_evidence_types": ["quote", "named_initiative", "described_decision"]
 }`;
 
   try {
@@ -525,7 +783,6 @@ OUTPUT JSON ONLY:
       LOVABLE_API_KEY,
       "You extract sender intent profiles to guide cold email research. Be specific about themes and terms.",
       prompt,
-      RESEARCH_MODEL_NAME,
     );
 
     const cleaned = response.replace(/```json\n?|\n?```/g, "").trim();
@@ -541,7 +798,7 @@ OUTPUT JSON ONLY:
   } catch (e) {
     console.error("Failed to extract sender intent profile:", e);
 
-    // Fallback: extract simple keywords from sender context
+    // Fallback: extract simple keywords
     const combinedText = `${reachingOutBecause} ${credibilityStory}`.toLowerCase();
     const simpleTerms = extractSimpleKeywords(combinedText);
 
@@ -555,252 +812,13 @@ OUTPUT JSON ONLY:
   }
 }
 
-// ============= STAGE 1: IDENTITY FINGERPRINT =============
-
-async function extractIdentityFingerprint(
-  recipientName: string,
-  recipientCompany: string,
-  recipientRole: string,
-  identityResults: ExaResult[],
-  LOVABLE_API_KEY: string,
-): Promise<{ fingerprint: IdentityFingerprint; confidence: number }> {
-  console.log("=== Stage 1B: Extract Identity Fingerprint via LLM ===");
-
-  if (identityResults.length === 0) {
-    return {
-      fingerprint: {
-        canonical_name: recipientName,
-        company: recipientCompany,
-        role_keywords: recipientRole
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((w) => w.length > 2),
-        disambiguators: [],
-        confounders: [],
-      },
-      confidence: 0.3,
-    };
-  }
-
-  const sourcesContext = identityResults
-    .slice(0, 3)
-    .map(
-      (r, i) => `
-SOURCE ${i + 1}: ${r.url}
-Title: ${r.title}
-Content: ${(r.text || r.snippet || "").substring(0, 1500)}
-`,
-    )
-    .join("\n---\n");
-
-  const extractionPrompt = `Analyze these search results about "${recipientName}" at "${recipientCompany}" (${recipientRole}).
-
-${sourcesContext}
-
-Extract an IDENTITY FINGERPRINT to help disambiguate this person from others with similar names.
-
-Return JSON:
-{
-  "canonical_name": "The full name as it appears most often (e.g., 'Christopher Young' vs 'Chris Young')",
-  "company": "${recipientCompany}",
-  "role_keywords": ["key", "role", "terms"],
-  "disambiguators": ["unique identifiers: product areas, prior companies, business units, geography, initiatives they're known for"],
-  "confounders": [
-    {
-      "name": "Name of any OTHER person with same name found in results",
-      "negative_keywords": ["keywords", "that", "identify", "wrong", "person"]
-    }
-  ],
-  "identity_confidence": 0.0
-}
-
-The "disambiguators" should be 3-8 terms that UNIQUELY identify this person (not generic terms).
-The "confounders" should capture any OTHER people with the same name that appeared in results.
-"identity_confidence" should be 0.0-1.0 based on how confident you are this is the right person.
-
-Return ONLY valid JSON.`;
-
-  try {
-    const response = await callLLM(
-      LOVABLE_API_KEY,
-      "You extract identity information to disambiguate people with common names.",
-      extractionPrompt,
-      RESEARCH_MODEL_NAME,
-    );
-
-    const cleaned = response.replace(/```json\n?|\n?```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-
-    return {
-      fingerprint: {
-        canonical_name: parsed.canonical_name || recipientName,
-        company: parsed.company || recipientCompany,
-        role_keywords: parsed.role_keywords || [],
-        disambiguators: parsed.disambiguators || [],
-        confounders: parsed.confounders || [],
-      },
-      confidence: parsed.identity_confidence || 0.5,
-    };
-  } catch (e) {
-    console.error("Failed to extract identity fingerprint:", e);
-    return {
-      fingerprint: {
-        canonical_name: recipientName,
-        company: recipientCompany,
-        role_keywords: recipientRole
-          .toLowerCase()
-          .split(/\s+/)
-          .filter((w) => w.length > 2),
-        disambiguators: [],
-        confounders: [],
-      },
-      confidence: 0.3,
-    };
-  }
-}
-
-// ============= STAGE 2: BRIDGE HYPOTHESES (UPDATED) =============
-
-async function generateBridgeHypotheses(
-  reachingOutBecause: string,
-  credibilityStory: string,
-  recipientRole: string,
-  recipientCompany: string,
-  intentProfile: SenderIntentProfile,
-  LOVABLE_API_KEY: string,
-): Promise<BridgeHypothesis[]> {
-  console.log("=== Stage 2: Generate Bridge Hypotheses ===");
-
-  const prompt = `You are designing search hypotheses for finding public, verifiable "hook facts" about a specific person.
-The goal is to support a cold email that MUST include a meaningful "Like you," bridge aligned with the sender's intent.
-
-INPUTS:
-- sender intent: ${reachingOutBecause}
-- sender credibility: ${credibilityStory}
-- sender's primary theme: ${intentProfile.primary_theme}
-- sender's must-include terms: ${intentProfile.must_include_terms.join(", ")}
-- recipient: ${recipientRole} at ${recipientCompany}
-
-TASK:
-Return exactly 3 hypotheses: domain, value, tradeoff.
-
-RULES:
-- Each hypothesis MUST be anchored to the sender's intent (not generic career bio).
-- Provide 6–12 keywords that are likely to appear in interviews, talks, essays, podcasts, initiatives, or quotes.
-- Provide a "proof_target" describing what would count as strong evidence.
-- Provide preferred evidence types (ranked): quote, named_initiative, named_artifact, described_decision, public_stance.
-- Avoid generic keywords like "career", "role", "executive", "strategy" unless the sender intent is explicitly about those topics.
-- The "theme" should tie back to the sender's intent profile.
-
-OUTPUT JSON ONLY:
-{
-  "hypotheses": [
-    { "type": "domain", "theme": "...", "keywords": [...], "proof_target": "...", "evidence_types": [...] },
-    { "type": "value",  "theme": "...", "keywords": [...], "proof_target": "...", "evidence_types": [...] },
-    { "type": "tradeoff", "theme": "...", "keywords": [...], "proof_target": "...", "evidence_types": [...] }
-  ]
-}`;
-
-  try {
-    const response = await callLLM(
-      LOVABLE_API_KEY,
-      "You generate strategic hypotheses for cold email personalization. Be rigorous about aligning with sender intent.",
-      prompt,
-      RESEARCH_MODEL_NAME,
-    );
-
-    const cleaned = response.replace(/```json\n?|\n?```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-
-    return (parsed.hypotheses || []).slice(0, 3).map((h: any) => ({
-      type: h.type,
-      theme: h.theme || "",
-      keywords: h.keywords || [],
-      proof_target: h.proof_target || "",
-      evidence_types: h.evidence_types || ["quote", "named_initiative"],
-    }));
-  } catch (e) {
-    console.error("Failed to generate bridge hypotheses:", e);
-
-    // Fallback: use intent profile terms directly
-    return [
-      {
-        type: "domain",
-        theme: intentProfile.primary_theme,
-        keywords: intentProfile.must_include_terms.slice(0, 6),
-        proof_target: "Recipient has discussed or led something related to sender intent",
-        evidence_types: ["quote", "named_initiative", "described_decision"],
-      },
-      {
-        type: "value",
-        theme: intentProfile.secondary_themes[0] || intentProfile.primary_theme,
-        keywords: intentProfile.must_include_terms.slice(3, 9),
-        proof_target: "Recipient shares values aligned with sender theme",
-        evidence_types: ["quote", "public_stance", "named_initiative"],
-      },
-      {
-        type: "tradeoff",
-        theme: "challenges in " + intentProfile.primary_theme,
-        keywords: ["decision", "challenge", "tradeoff", "chose", ...intentProfile.must_include_terms.slice(0, 3)],
-        proof_target: "Recipient has faced similar tensions or tradeoffs",
-        evidence_types: ["described_decision", "quote"],
-      },
-    ];
-  }
-}
-
 function extractSimpleKeywords(text: string): string[] {
   const stopwords = new Set([
-    "i",
-    "me",
-    "my",
-    "we",
-    "our",
-    "you",
-    "your",
-    "the",
-    "a",
-    "an",
-    "and",
-    "or",
-    "but",
-    "to",
-    "for",
-    "of",
-    "in",
-    "on",
-    "at",
-    "by",
-    "with",
-    "is",
-    "are",
-    "was",
-    "were",
-    "be",
-    "been",
-    "have",
-    "has",
-    "had",
-    "do",
-    "does",
-    "did",
-    "will",
-    "would",
-    "could",
-    "should",
-    "this",
-    "that",
-    "these",
-    "those",
-    "it",
-    "its",
-    "about",
-    "who",
-    "what",
-    "where",
-    "when",
-    "why",
-    "how",
+    "i", "me", "my", "we", "our", "you", "your", "the", "a", "an", "and", "or", "but",
+    "to", "for", "of", "in", "on", "at", "by", "with", "is", "are", "was", "were",
+    "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "this", "that", "these", "those", "it", "its", "about", "who", "what",
+    "where", "when", "why", "how",
   ]);
 
   return text
@@ -809,780 +827,6 @@ function extractSimpleKeywords(text: string): string[] {
     .split(/\s+/)
     .filter((w) => w.length > 3 && !stopwords.has(w))
     .slice(0, 12);
-}
-
-// ============= STAGE 3: ITERATIVE CANDIDATE DISCOVERY (V2) =============
-
-function buildQueriesFromTemplates(
-  name: string,
-  company: string,
-  keywords: string[],
-  templateType: keyof typeof TEMPLATE_LIBRARY,
-  maxQueries: number = 2,
-): string[] {
-  const templates = TEMPLATE_LIBRARY[templateType];
-  const queries: string[] = [];
-
-  for (let i = 0; i < Math.min(templates.length, maxQueries); i++) {
-    const keyword = keywords[i % keywords.length] || "";
-    const query = templates[i]
-      .replace("{name}", name)
-      .replace("{company}", company)
-      .replace("{keyword}", keyword)
-      .replace('"{keyword}"', `"${keyword}"`);
-    queries.push(query);
-  }
-
-  return queries;
-}
-
-function scoreSnippetForIntent(text: string, title: string, url: string, intentProfile: SenderIntentProfile): number {
-  const combined = `${title} ${text} ${url}`.toLowerCase();
-  let score = 0.0;
-
-  // Points for must_include_terms (max 0.5)
-  const mustIncludeHits = intentProfile.must_include_terms.filter((term) =>
-    combined.includes(term.toLowerCase()),
-  ).length;
-  score += Math.min(0.5, mustIncludeHits * 0.08);
-
-  // Points for evidence markers (max 0.25)
-  const evidenceMarkers = [
-    "interview",
-    "podcast",
-    "keynote",
-    "essay",
-    "op-ed",
-    "initiative",
-    "program",
-    "speech",
-    "talk",
-    "wrote",
-    "said",
-  ];
-  const evidenceHits = evidenceMarkers.filter((marker) => combined.includes(marker)).length;
-  score += Math.min(0.25, evidenceHits * 0.05);
-
-  // Negative points for generic bio signals (max -0.25)
-  const genericBioSignals = [
-    "joined",
-    "previously",
-    "tenure",
-    "career",
-    "role",
-    "executive",
-    "appointed",
-    "named",
-    "promoted",
-  ];
-  const genericHits = genericBioSignals.filter((signal) => combined.includes(signal)).length;
-  score -= Math.min(0.25, genericHits * 0.05);
-
-  // Negative points for avoid_terms (max -0.3)
-  const avoidHits = intentProfile.avoid_terms.filter((term) => combined.includes(term.toLowerCase())).length;
-  score -= Math.min(0.3, avoidHits * 0.1);
-
-  return Math.max(0, Math.min(1, score + 0.4)); // baseline 0.4, clamp to 0-1
-}
-
-async function discoverCandidatesV2(
-  recipientName: string,
-  fingerprint: IdentityFingerprint,
-  hypotheses: BridgeHypothesis[],
-  intentProfile: SenderIntentProfile,
-  exaApiKey: string,
-): Promise<{
-  candidates: ExaResult[];
-  queriesUsed: string[];
-  scoredCandidates: { url: string; intent_fit: number; identity_match: boolean }[];
-}> {
-  const t0 = Date.now();
-  console.log("=== Stage 3: Iterative Candidate Discovery V2 ===");
-
-  const MAX_QUERIES = 12;
-  const MIN_HIGH_INTENT_CANDIDATES = 4;
-
-  const queriesUsed: string[] = [];
-  const allResults: ExaResult[] = [];
-  const seenUrls = new Set<string>();
-
-  // Build confounder negation string
-  const negations = fingerprint.confounders
-    .flatMap((c) => c.negative_keywords.slice(0, 2))
-    .map((k) => `-${k}`)
-    .join(" ");
-
-  // Collect all keywords from hypotheses + intent profile
-  const primaryKeywords = intentProfile.must_include_terms.slice(0, 6);
-  const hypothesisKeywords = hypotheses.flatMap((h) => h.keywords.slice(0, 4));
-
-  // ============= LANE A: Identity queries (2 queries) - PARALLEL =============
-  console.log("Lane A: Identity queries (parallel)");
-  const laneAQueries: string[] = [];
-  for (const template of TEMPLATE_LIBRARY.identity) {
-    if (laneAQueries.length >= 2) break;
-    let query = template
-      .replace("{name}", recipientName)
-      .replace("{company}", fingerprint.company)
-      .replace("{role}", fingerprint.role_keywords[0] || "");
-    if (negations) query = `${query} ${negations}`;
-    laneAQueries.push(query);
-  }
-
-  // ============= LANE A-PRIME: Name-required queries (no company filter) =============
-  // These find person-specific content like podcasts, interviews from previous roles
-  console.log("Lane A-Prime: Name-required queries (no company filter)");
-  const laneAPrimeQueries: string[] = [];
-  for (const template of TEMPLATE_LIBRARY.name_required) {
-    if (laneAPrimeQueries.length >= 3) break; // Max 3 name-only queries
-    let query = template.replace("{name}", recipientName);
-    if (negations) query = `${query} ${negations}`;
-    laneAPrimeQueries.push(query);
-  }
-
-  // ============= LANE B: Primary intent theme queries (4-6 queries) - BUILD =============
-  console.log("Lane B: Building primary intent theme queries");
-  const laneB_templates = ["interview", "speech", "initiative"] as const;
-  const laneBQueries: string[] = [];
-  let laneBCount = 0;
-
-  for (const templateType of laneB_templates) {
-    if (laneBQueries.length >= 6 || laneBCount >= 4) break;
-
-    const keywordsForType = primaryKeywords.slice(laneBCount, laneBCount + 2);
-    const queries = buildQueriesFromTemplates(recipientName, fingerprint.company, keywordsForType, templateType, 2);
-
-    for (const query of queries) {
-      if (laneBQueries.length >= 6) break;
-      let finalQuery = negations ? `${query} ${negations}` : query;
-      laneBQueries.push(finalQuery);
-      laneBCount++;
-    }
-  }
-
-  // ============= RUN LANE A + A-PRIME + B WITH RATE LIMITING =============
-  const allLaneQueries = [...laneAQueries, ...laneAPrimeQueries, ...laneBQueries];
-  queriesUsed.push(...allLaneQueries);
-
-  const t1 = Date.now();
-  const laneACount = laneAQueries.length;
-  const laneAPrimeCount = laneAPrimeQueries.length;
-  console.log(`Running ${allLaneQueries.length} queries (Lane A: ${laneACount}, A-Prime: ${laneAPrimeCount}, B: ${laneBQueries.length}) with rate limiting`);
-
-  // Create task functions for batching
-  // Lane A gets 5 results, Lane A-Prime gets 5, Lane B gets 8
-  const laneTasks = allLaneQueries.map((q, i) => {
-    const numResults = i < laneACount ? 5 : (i < laneACount + laneAPrimeCount ? 5 : 8);
-    return () => exaSearchWithContent(q, exaApiKey, numResults);
-  });
-  const laneResults = await batchWithRateLimit(laneTasks, 4, 250);
-
-  console.log(`Lane A+A'+B rate-limited queries completed in ${Date.now() - t1}ms`);
-
-  for (const results of laneResults) {
-    for (const r of results) {
-      if (!seenUrls.has(r.url)) {
-        seenUrls.add(r.url);
-        allResults.push(r);
-      }
-    }
-  }
-
-  // Score candidates for early stopping
-  const scoredCandidates = allResults.map((r) => ({
-    url: r.url,
-    intent_fit: scoreSnippetForIntent(r.text || r.snippet || "", r.title, r.url, intentProfile),
-    identity_match: checkQuickIdentityMatch(r.text || r.snippet || "", recipientName, fingerprint),
-  }));
-
-  const highIntentCount = scoredCandidates.filter((c) => c.intent_fit >= 0.6 && c.identity_match).length;
-  console.log(`After Lanes A+A'+B: ${highIntentCount} high-intent candidates`);
-
-  // Early stop if we have enough
-  if (highIntentCount >= MIN_HIGH_INTENT_CANDIDATES) {
-    console.log(`Early stop: enough high-intent candidates. Stage 3 completed in ${Date.now() - t0}ms`);
-    return { candidates: allResults, queriesUsed, scoredCandidates };
-  }
-
-  // ============= LANE C: Secondary/hypothesis queries (2-4 more) - PARALLEL =============
-  console.log("Lane C: Secondary theme queries (parallel)");
-  const laneC_templates = ["written", "general"] as const;
-  const laneCQueries: string[] = [];
-
-  for (const templateType of laneC_templates) {
-    if (queriesUsed.length + laneCQueries.length >= MAX_QUERIES) break;
-
-    const queries = buildQueriesFromTemplates(
-      recipientName,
-      fingerprint.company,
-      hypothesisKeywords.slice(0, 3),
-      templateType,
-      2,
-    );
-
-    for (const query of queries) {
-      if (queriesUsed.length + laneCQueries.length >= MAX_QUERIES) break;
-      let finalQuery = negations ? `${query} ${negations}` : query;
-      laneCQueries.push(finalQuery);
-    }
-  }
-
-  if (laneCQueries.length > 0) {
-    queriesUsed.push(...laneCQueries);
-
-    const t2 = Date.now();
-    console.log(`Running ${laneCQueries.length} Lane C queries with rate limiting`);
-
-    // Create task functions for batching
-    const laneCTasks = laneCQueries.map((q) => () => exaSearchWithContent(q, exaApiKey, 6));
-    const laneCResults = await batchWithRateLimit(laneCTasks, 4, 250);
-
-    console.log(`Lane C rate-limited queries completed in ${Date.now() - t2}ms`);
-
-    for (const results of laneCResults) {
-      for (const r of results) {
-        if (!seenUrls.has(r.url)) {
-          seenUrls.add(r.url);
-          allResults.push(r);
-        }
-      }
-    }
-  }
-
-  // Rescore all candidates
-  const finalScoredCandidates = allResults.map((r) => ({
-    url: r.url,
-    intent_fit: scoreSnippetForIntent(r.text || r.snippet || "", r.title, r.url, intentProfile),
-    identity_match: checkQuickIdentityMatch(r.text || r.snippet || "", recipientName, fingerprint),
-  }));
-
-  console.log(
-    `Discovered ${allResults.length} candidate URLs from ${queriesUsed.length} queries in ${Date.now() - t0}ms`,
-  );
-  return { candidates: allResults, queriesUsed, scoredCandidates: finalScoredCandidates };
-}
-
-function checkQuickIdentityMatch(text: string, recipientName: string, fingerprint: IdentityFingerprint): boolean {
-  const lowerText = text.toLowerCase();
-  const nameParts = recipientName.toLowerCase().split(/\s+/);
-  const hasName = nameParts.some((part) => part.length > 2 && lowerText.includes(part));
-  const hasCompany = lowerText.includes(fingerprint.company.toLowerCase());
-  return hasName && hasCompany;
-}
-
-// ============= STAGE 4: NICHE GATE =============
-
-function applyNicheGate(url: string, title: string, snippet: string): { passed: boolean; reasons: string[] } {
-  const lowerUrl = url.toLowerCase();
-  const lowerTitle = (title || "").toLowerCase();
-  const lowerSnippet = (snippet || "").toLowerCase();
-  const combined = `${lowerTitle} ${lowerSnippet}`;
-
-  const reasons: string[] = [];
-
-  // REJECT patterns (hard no)
-  const rejectPatterns = [
-    { pattern: "linkedin.com", reason: "LinkedIn profile" },
-    { pattern: "wikipedia.org", reason: "Wikipedia (generic bio)" },
-    { pattern: "/about", reason: "About page (generic bio)" },
-    { pattern: "/leadership", reason: "Leadership page (directory)" },
-    { pattern: "/team", reason: "Team page (directory)" },
-    { pattern: "/board", reason: "Board page (directory)" },
-    { pattern: "/executive", reason: "Executive page (generic bio)" },
-  ];
-
-  for (const { pattern, reason } of rejectPatterns) {
-    if (lowerUrl.includes(pattern)) {
-      return { passed: false, reasons: [`REJECT: ${reason}`] };
-    }
-  }
-
-  // ELIGIBLE patterns (must match at least one)
-  const eligiblePatterns = [
-    { patterns: ["interview", "podcast", "transcript", "fireside", "conversation"], type: "artifact" },
-    { patterns: ["talk", "keynote", "panel", "conference", "summit"], type: "artifact" },
-    { patterns: ["essay", "op-ed", "wrote", "writes", "blog", "newsletter", "substack"], type: "artifact" },
-    { patterns: ["joined", "left", "pivot", "acquired", "founded", "launched"], type: "inflection" },
-    { patterns: ["initiative", "program", "announced", "leading", "spearheading"], type: "initiative" },
-    { patterns: ["i think", "i believe", "we learned", "lesson", "mistake", "surprised", "realized"], type: "stance" },
-  ];
-
-  for (const { patterns, type } of eligiblePatterns) {
-    for (const p of patterns) {
-      if (lowerUrl.includes(p) || combined.includes(p)) {
-        reasons.push(`ELIGIBLE: ${type} (found "${p}")`);
-        return { passed: true, reasons };
-      }
-    }
-  }
-
-  // Publication domain boost (can pass even without explicit pattern)
-  const pubDomains = [
-    "medium.com",
-    "substack.com",
-    "forbes.com",
-    "techcrunch.com",
-    "wired.com",
-    "hbr.org",
-    "firstround.com",
-    "a16z.com",
-    "nfx.com",
-    "fastcompany.com",
-    "axios.com",
-    "youtube.com/watch",
-  ];
-  for (const domain of pubDomains) {
-    if (lowerUrl.includes(domain)) {
-      reasons.push(`ELIGIBLE: publication domain (${domain})`);
-      return { passed: true, reasons };
-    }
-  }
-
-  return { passed: false, reasons: ["REJECT: no eligible pattern found"] };
-}
-
-// ============= STAGE 5: IDENTITY CONFIDENCE SCORING =============
-
-// Utility: normalize text for matching
-function normalizeToken(s: string): string {
-  return s.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-// Utility: unique array
-function uniq<T>(arr: T[]): T[] {
-  return Array.from(new Set(arr));
-}
-
-// Utility: check if string is a generic disambiguator
-function isGenericDisambiguator(s: string): boolean {
-  const generic = new Set([
-    "product manager",
-    "pm",
-    "founder",
-    "ceo",
-    "cto",
-    "coo",
-    "cfo",
-    "vp",
-    "director",
-    "software engineer",
-    "manager",
-    "fintech",
-    "startup",
-    "operator",
-    "executive",
-    "leader",
-    "tech",
-    "technology",
-    "engineering",
-    "product",
-  ]);
-  return generic.has(s);
-}
-
-// Build tiered disambiguators from fingerprint (including LinkedIn-derived signals)
-function buildDisambiguators(fp: IdentityFingerprint): { tier1: string[]; tier2: string[] } {
-  const t1: string[] = [];
-  const t2: string[] = [];
-
-  // Tier 1: company variants (safe / high-precision)
-  const company = fp.company?.trim();
-  if (company) {
-    t1.push(company);
-    t1.push(`${company} inc`);
-    t1.push(`${company}.com`);
-  }
-  (fp.company_variants ?? []).forEach(v => t1.push(v));
-
-  // NEW: LinkedIn-derived past companies are strong tier-1 disambiguators
-  (fp.linkedin_past_companies ?? []).forEach(c => {
-    const nc = normalizeToken(c);
-    if (nc.length >= 4 && !isGenericDisambiguator(nc)) {
-      t1.push(c);
-    }
-  });
-
-  // NEW: LinkedIn education is tier-1 (very distinctive)
-  (fp.linkedin_education ?? []).forEach(edu => {
-    // Extract school name from strings like "Stanford MBA 2015"
-    const parts = edu.split(/\s+/);
-    for (const part of parts) {
-      const np = normalizeToken(part);
-      if (np.length >= 4 && !isGenericDisambiguator(np) && !/^\d{4}$/.test(np)) {
-        t1.push(part);
-      }
-    }
-  });
-
-  // Include LLM disambiguators, bucket them based on specificity
-  (fp.disambiguators ?? []).forEach(d => {
-    const nd = normalizeToken(d);
-    // Long-ish and not generic => tier 1; else tier 2
-    if (nd.length >= 8 && !isGenericDisambiguator(nd)) {
-      t1.push(d);
-    } else {
-      t2.push(d);
-    }
-  });
-
-  // Tier 2 fallback: role keywords (only useful with pairing rule)
-  (fp.role_keywords ?? []).forEach(r => t2.push(r));
-
-  // NEW: LinkedIn skills go to tier 2
-  (fp.linkedin_skills ?? []).forEach(skill => {
-    const ns = normalizeToken(skill);
-    if (ns.length >= 4) {
-      t2.push(skill);
-    }
-  });
-
-  return {
-    tier1: uniq(t1.map(normalizeToken)).filter(x => x.length > 3),
-    tier2: uniq(t2.map(normalizeToken)).filter(x => x.length > 3),
-  };
-}
-
-// Check if text contains any of the tokens
-function containsAny(text: string, tokens: string[]): boolean {
-  return tokens.some(t => t.length > 3 && text.includes(t));
-}
-
-// Compute identity signals from text and fingerprint
-function computeIdentitySignals(textRaw: string, fp: IdentityFingerprint): IdentitySignals {
-  const text = normalizeToken(textRaw);
-  const fullName = normalizeToken(fp.canonical_name);
-  const nameParts = fullName.split(" ");
-  const lastName = nameParts.slice(-1)[0];
-
-  const dis = buildDisambiguators(fp);
-
-  const has_full_name = text.includes(fullName);
-  const has_last_name = lastName.length > 2 && text.includes(lastName);
-
-  const has_company = fp.company
-    ? text.includes(normalizeToken(fp.company))
-    : false;
-
-  const has_disambiguator_t1 = containsAny(text, dis.tier1);
-  const has_disambiguator_t2_raw = containsAny(text, dis.tier2);
-
-  // Pairing rule: role/disambiguator tier2 only "counts" if name present
-  const name_present = has_full_name || has_last_name;
-  const has_role_paired = name_present && containsAny(text, (fp.role_keywords ?? []).map(normalizeToken));
-
-  return {
-    has_full_name,
-    has_last_name,
-    has_company,
-    has_disambiguator_t1,
-    has_disambiguator_t2: name_present && has_disambiguator_t2_raw, // pairing rule applied
-    has_role_paired,
-  };
-}
-
-// Compute identity confidence score from signals
-function computeIdentityConfidence(signals: IdentitySignals): { score: number; decision: IdentityDecision } {
-  let score = 0;
-
-  // Name signals (max 0.55)
-  if (signals.has_full_name) score += 0.55;
-  else if (signals.has_last_name) score += 0.15;
-
-  // Company signal (0.30)
-  if (signals.has_company) score += 0.30;
-
-  // Tiered disambiguators
-  if (signals.has_disambiguator_t1) score += 0.20;
-  if (signals.has_disambiguator_t2) score += 0.10;
-
-  // Role only counts if paired with name
-  if (signals.has_role_paired) score += 0.10;
-
-  // Cap at 1.0
-  score = Math.min(1, score);
-
-  // Decision thresholds
-  const decision: IdentityDecision =
-    score >= 0.75 ? "PASS_HIGH" :
-    score >= 0.45 ? "PASS_LOW" :
-    "FAIL";
-
-  return { score, decision };
-}
-
-// Check for confounder keywords (negative signal)
-function checkConfounders(text: string, fingerprint: IdentityFingerprint): { hasConfounder: boolean; confounderReason: string | null } {
-  const lowerText = text.toLowerCase();
-  for (const confounder of fingerprint.confounders || []) {
-    for (const negKeyword of confounder.negative_keywords || []) {
-      if (negKeyword.length > 3 && lowerText.includes(negKeyword.toLowerCase())) {
-        return {
-          hasConfounder: true,
-          confounderReason: `Confounder keyword "${negKeyword}" found (may be ${confounder.name})`,
-        };
-      }
-    }
-  }
-  return { hasConfounder: false, confounderReason: null };
-}
-
-// Main identity check function (replaces old checkIdentityLock)
-function checkIdentityConfidence(
-  text: string,
-  recipientName: string,
-  fingerprint: IdentityFingerprint,
-): { 
-  locked: boolean; 
-  score: number;
-  decision: IdentityDecision;
-  signals: IdentitySignals;
-  reasons: string[];
-} {
-  const reasons: string[] = [];
-
-  // First check for confounders (hard fail)
-  const { hasConfounder, confounderReason } = checkConfounders(text, fingerprint);
-  if (hasConfounder && confounderReason) {
-    const emptySignals: IdentitySignals = {
-      has_full_name: false,
-      has_last_name: false,
-      has_company: false,
-      has_disambiguator_t1: false,
-      has_disambiguator_t2: false,
-      has_role_paired: false,
-    };
-    return {
-      locked: false,
-      score: 0,
-      decision: "FAIL",
-      signals: emptySignals,
-      reasons: [`Identity FAIL: ${confounderReason}`],
-    };
-  }
-
-  // Compute signals and confidence
-  const signals = computeIdentitySignals(text, fingerprint);
-  const { score, decision } = computeIdentityConfidence(signals);
-
-  // Build reasons for debugging
-  if (signals.has_full_name) reasons.push("Full name found");
-  else if (signals.has_last_name) reasons.push("Last name found");
-  else reasons.push("Name not found");
-
-  if (signals.has_company) reasons.push("Company found");
-  if (signals.has_disambiguator_t1) reasons.push("Tier1 disambiguator found");
-  if (signals.has_disambiguator_t2) reasons.push("Tier2 disambiguator found (paired)");
-  if (signals.has_role_paired) reasons.push("Role keyword found (paired with name)");
-
-  reasons.push(`Score: ${score.toFixed(2)} → ${decision}`);
-
-  return {
-    locked: decision !== "FAIL",
-    score,
-    decision,
-    signals,
-    reasons,
-  };
-}
-
-// Legacy wrapper for backward compatibility
-function checkIdentityLock(
-  text: string,
-  recipientName: string,
-  fingerprint: IdentityFingerprint,
-): { locked: boolean; reasons: string[] } {
-  const result = checkIdentityConfidence(text, recipientName, fingerprint);
-  return { locked: result.locked, reasons: result.reasons };
-}
-
-// ============= STAGE 6: HOOK PACK EXTRACTION (UPDATED) =============
-
-async function extractHookPacks(
-  recipientName: string,
-  recipientRole: string,
-  recipientCompany: string,
-  eligibleCandidates: CandidateUrl[],
-  hypotheses: BridgeHypothesis[],
-  intentProfile: SenderIntentProfile,
-  credibilityStory: string,
-  LOVABLE_API_KEY: string,
-): Promise<HookPack[]> {
-  console.log("=== Stage 6: Hook Pack Extraction (Intent-Conditioned) ===");
-
-  if (eligibleCandidates.length === 0) {
-    console.log("No eligible candidates for hook pack extraction");
-    return [];
-  }
-
-  const sourcesContext = eligibleCandidates
-    .slice(0, 6)
-    .map(
-      (c, i) => `
-SOURCE ${i + 1}: ${c.url}
-Title: ${c.title}
-Intent Fit Score: ${(c.intent_fit_score || 0).toFixed(2)}
-Content: ${(c.text || "").substring(0, 2000)}
-`,
-    )
-    .join("\n---\n");
-
-  const hypothesesContext = hypotheses
-    .map(
-      (h, i) => `
-${i + 1}. ${h.type.toUpperCase()} bridge (theme: ${h.theme}): Looking for evidence that ${h.proof_target}
-   Keywords: ${h.keywords.join(", ")}
-   Preferred evidence: ${h.evidence_types.join(", ")}
-`,
-    )
-    .join("");
-
-  const extractionPrompt = `Extract Hook Packs for a cold email to ${recipientName}, ${recipientRole} at ${recipientCompany}.
-
-SENDER'S INTENT PROFILE:
-- Primary theme: ${intentProfile.primary_theme}
-- Must-include terms: ${intentProfile.must_include_terms.join(", ")}
-- Avoid terms: ${intentProfile.avoid_terms.join(", ")}
-
-SENDER'S CREDIBILITY STORY:
-"${credibilityStory}"
-
-BRIDGE HYPOTHESES (aligned with sender intent):
-${hypothesesContext}
-
-SOURCES TO ANALYZE:
-${sourcesContext}
-
-For each source, try to extract a Hook Pack. A Hook Pack contains:
-1. A POINTABLE CLAIM - a fact that can be quoted, named, or directly referenced
-2. "Like you" INGREDIENTS (NOT a pre-written sentence!) for crafting the bridge
-3. Scores for quality including INTENT_FIT
-
-═══════════════════════════════════════════════════════════════════
-CRITICAL: EVIDENCE MUST BE POINTABLE
-═══════════════════════════════════════════════════════════════════
-
-A claim is ONLY valid if it includes at least one of:
-✓ QUOTE - Exact words the recipient said (in quotes)
-✓ NAMED_INITIATIVE - A specific named project, product, or program they created/led
-✓ DESCRIBED_DECISION - A specific choice they made with concrete context
-✓ NAMED_ARTIFACT - A specific article, podcast, talk, paper, or interview by name/title
-✓ PUBLIC_STANCE - A clearly stated position on an issue
-
-AUTOMATICALLY REJECT claims that are merely:
-✗ "interest in..." / "focus on..." / "known for..."
-✗ "has been involved in..." / "passionate about..." / "believes in..."
-✗ Any vague attribution without a specific named thing or direct quote
-
-═══════════════════════════════════════════════════════════════════
-CRITICAL: LIKE_YOU_INGREDIENTS (NOT like_you_line!)
-═══════════════════════════════════════════════════════════════════
-
-Instead of writing a complete "Like you," sentence, provide INGREDIENTS:
-- shared_axis: The domain/theme both sender and recipient care about (e.g., "building inclusive leadership pipelines")
-- shared_action: What they both DO in that space (e.g., "convening leaders", "running mentorship programs")
-- shared_stakes: Why it matters to both (e.g., "who gets opportunity next")
-- optional_phrases: 0-2 specific phrases that might work well (optional)
-
-The email writer will combine these ingredients into a natural "Like you," sentence.
-
-═══════════════════════════════════════════════════════════════════
-CRITICAL: INTENT_FIT SCORING
-═══════════════════════════════════════════════════════════════════
-
-intent_fit measures how well the hook aligns with the SENDER's intent:
-- 1.0: Hook directly supports the sender's primary_theme (e.g., speaker invite about inclusion → found inclusion initiative)
-- 0.7: Hook tangentially relates to sender theme
-- 0.3: Hook is interesting but unrelated to sender intent (e.g., M&A news when sender cares about inclusion)
-- 0.0: Hook actively contradicts sender intent
-
-HARD RULE: If the sender's primary theme is about inclusion/diversity/pipeline AND you find a hook about M&A/acquisitions, that hook's intent_fit should be LOW (0.2-0.4) even if it's non-generic.
-
-Return JSON:
-{
-  "hook_packs": [
-    {
-      "hook_fact": {
-        "claim": "Non-obvious claim about recipient",
-        "source_url": "https://...",
-        "evidence": "8-25 word quote OR named artifact/initiative/decision from source",
-        "evidence_type": "quote|named_initiative|described_decision|named_artifact|public_stance"
-      },
-      "bridge": {
-        "bridge_angle": "domain|value|tradeoff|artifact|inflection|shared-affiliation",
-        "why_relevant": "Brief explanation of why this bridge works for the sender's intent",
-        "like_you_ingredients": {
-          "shared_axis": "the domain/theme you both care about",
-          "shared_action": "what you both DO",
-          "shared_stakes": "why it matters",
-          "optional_phrases": ["optional", "phrases"]
-        },
-        "intent_theme": "Which sender theme this supports (e.g., 'inclusion/pipeline')"
-      },
-      "scores": {
-        "identity_conf": 0.0-1.0,
-        "non_generic": 0.0-1.0,
-        "intent_fit": 0.0-1.0,
-        "bridgeability": 0.0-1.0,
-        "overall": 0.0-1.0
-      }
-    }
-  ]
-}
-
-SCORING RUBRIC:
-- identity_conf: Is this clearly about the right person? (0.0 = uncertain, 1.0 = definitely them)
-- non_generic: Would this be unknown from their title alone? (0.0 = obvious, 1.0 = surprising)
-- intent_fit: Does this align with the sender's primary theme? (0.0 = irrelevant, 1.0 = perfect fit)
-- bridgeability: Can we write a specific "Like you," line? (0.0 = generic, 1.0 = concrete parallel)
-- overall: Weighted = 0.40*intent_fit + 0.25*identity_conf + 0.20*non_generic + 0.15*bridgeability
-
-Only include Hook Packs with overall score >= 0.5
-Return maximum 3 Hook Packs.
-PRIORITIZE INTENT_FIT: If any candidate has intent_fit >= 0.75, at least one Hook Pack MUST come from high-intent sources.
-
-IF NO CLAIMS MEET THE "POINTABLE" REQUIREMENT, RETURN AN EMPTY ARRAY.
-Better to return 0 Hook Packs than to return vague, unprovable claims.
-
-Return ONLY valid JSON.`;
-
-  try {
-    const response = await callLLM(
-      LOVABLE_API_KEY,
-      "You extract high-quality, intent-aligned personalization hooks for cold emails. Prioritize hooks that align with the sender's actual purpose.",
-      extractionPrompt,
-      RESEARCH_MODEL_NAME,
-    );
-
-    const cleaned = response.replace(/```json\n?|\n?```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-
-    // Filter and sort by overall score
-    let hookPacks: HookPack[] = (parsed.hook_packs || [])
-      .filter((hp: HookPack) => hp.scores?.overall >= 0.5)
-      .sort((a: HookPack, b: HookPack) => (b.scores?.overall || 0) - (a.scores?.overall || 0))
-      .slice(0, 3);
-
-    // HARD RULE: Ensure at least one high intent_fit hook if available
-    const highIntentHooks = hookPacks.filter((hp) => hp.scores?.intent_fit >= 0.75);
-    if (highIntentHooks.length === 0) {
-      // Check if there are any high-intent hooks we missed
-      const allHighIntent = (parsed.hook_packs || []).filter(
-        (hp: HookPack) => hp.scores?.intent_fit >= 0.75 && hp.scores?.identity_conf >= 0.5,
-      );
-      if (allHighIntent.length > 0) {
-        // Replace lowest overall hook with highest intent_fit hook
-        hookPacks = hookPacks.slice(0, 2);
-        hookPacks.push(allHighIntent[0]);
-        hookPacks.sort((a: HookPack, b: HookPack) => (b.scores?.overall || 0) - (a.scores?.overall || 0));
-      }
-    }
-
-    console.log(`Extracted ${hookPacks.length} Hook Packs (${highIntentHooks.length} high-intent)`);
-    return hookPacks;
-  } catch (e) {
-    console.error("Failed to extract hook packs:", e);
-    return [];
-  }
 }
 
 // ============= HELPER FUNCTIONS =============
@@ -1618,460 +862,46 @@ async function callLLM(
   return data.choices[0].message.content;
 }
 
-async function exaSearchWithContent(query: string, exaApiKey: string, numResults: number = 8): Promise<ExaResult[]> {
-  console.log("Exa search query:", query);
+// ============= VALIDATION CONSTANTS =============
 
-  const response = await fetch("https://api.exa.ai/search", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${exaApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      query,
-      numResults,
-      type: "neural",
-      useAutoprompt: true,
-      contents: {
-        text: { maxCharacters: 3000 },
-        highlights: { numSentences: 5 },
-      },
-    }),
-  });
+const BANNED_CLICHES = [
+  "i'm reaching out because", "reaching out because", "passionate about",
+  "would love to connect", "keen interest", "impact at scale", "innovative solutions",
+  "extensive experience", "impressed by", "exceptional track record",
+  "exploring career paths", "thought leadership", "fostering", "driving impact",
+  "deeply resonated", "your incredible", "your remarkable", "your impressive",
+  "dedicated my career", "share a commitment", "believe in the importance",
+];
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("Exa search error:", response.status, errorText);
-    return [];
-  }
+const GENERIC_LIKE_YOU_PATTERNS = [
+  "passionate about", "think a lot about", "reaching out", "aligned with",
+  "resonates", "inspired", "keen to", "deeply appreciate", "share a commitment",
+  "believe in", "dedicated to", "driving", "fostering", "cultivating", "championing",
+];
 
-  const data = await response.json();
-  console.log("Exa search returned", data.results?.length || 0, "results");
+const BANNED_LIKE_YOU_VERBS = ["believe", "think", "care", "passionate", "focused", "committed", "want to"];
 
-  return (data.results || []).map((r: any) => ({
-    url: r.url || "",
-    title: r.title || "",
-    snippet: r.highlights?.join(" ") || "",
-    text: r.text || "",
-  }));
-}
+const CORPORATE_PADDING_PHRASES = [
+  "in the space", "thought leader", "synergy", "leverage", "ecosystem", "holistic",
+  "paradigm", "stakeholder", "best practices", "core competencies", "value proposition",
+  "move the needle", "circle back", "take this offline",
+];
 
-// ============= LINKEDIN ENRICHMENT FOR DISAMBIGUATORS =============
+const ROBOTIC_VOICE_PATTERNS = [
+  "i came across", "i stumbled upon", "i noticed that you", "i was particularly struck",
+  "i was impressed", "i was drawn to", "i wanted to reach out", "i hope this email finds you",
+  "i would love to", "i'd love to connect", "i believe we could", "i think there's an opportunity",
+  "excited to explore", "keen to discuss", "eager to learn", "looking forward to the opportunity",
+  "would be thrilled", "would be honored", "greatly appreciate", "truly appreciate",
+  "deeply appreciate", "resonate deeply", "resonated with me", "speaks to my",
+  "aligns perfectly", "perfectly aligned", "really stood out", "caught my attention",
+  "piqued my interest",
+];
 
-async function findLinkedInProfile(
-  name: string,
-  company: string,
-  exaApiKey: string,
-  generationId: string,
-): Promise<string | null> {
-  const query = `site:linkedin.com/in "${name}" "${company}"`;
-  console.log(`[LinkedIn] exa_query="${query}" generation_id=${generationId}`);
-  
-  try {
-    const response = await fetch("https://api.exa.ai/search", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${exaApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        query,
-        numResults: 3,
-        type: "neural",
-        useAutoprompt: false,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`[LinkedIn] Exa search failed: status=${response.status} body=${errorBody} generation_id=${generationId}`);
-      return null;
-    }
-
-    const data = await response.json();
-    const results = data.results || [];
-    
-    // Log all returned URLs for debugging
-    console.log(`[LinkedIn] Exa returned ${results.length} results: ${JSON.stringify(results.map((r: any) => r.url))} generation_id=${generationId}`);
-    
-    // Find LinkedIn profile URL
-    for (const result of results) {
-      const url = result.url?.toLowerCase() || "";
-      if (url.includes("linkedin.com/in/")) {
-        console.log(`[LinkedIn] Found profile: ${result.url} generation_id=${generationId}`);
-        return result.url;
-      }
-    }
-    
-    console.log(`[LinkedIn] No LinkedIn profile URL matched linkedin.com/in/ pattern generation_id=${generationId}`);
-    return null;
-  } catch (e) {
-    console.error(`[LinkedIn] Search error: ${e} generation_id=${generationId}`);
-    return null;
-  }
-}
-
-async function scrapeLinkedInProfile(linkedInUrl: string, generationId: string): Promise<string | null> {
-  const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
-  
-  if (!firecrawlApiKey) {
-    console.log(`[LinkedIn] FIRECRAWL_API_KEY not configured, skipping scrape generation_id=${generationId}`);
-    return null;
-  }
-  
-  console.log(`[LinkedIn] Scraping profile: ${linkedInUrl} generation_id=${generationId}`);
-  
-  try {
-    const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${firecrawlApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        url: linkedInUrl,
-        formats: ["markdown"],
-        onlyMainContent: true,
-        waitFor: 3000, // LinkedIn can be slow
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[LinkedIn] Firecrawl error: status=${response.status} body=${errorText} generation_id=${generationId}`);
-      return null;
-    }
-
-    const data = await response.json();
-    const markdown = data.data?.markdown || data.markdown;
-    
-    if (markdown) {
-      // Check if it looks like a login wall
-      const looksLikeLoginWall = markdown.length < 500 || markdown.toLowerCase().includes("sign in") && markdown.toLowerCase().includes("join now");
-      console.log(`[LinkedIn] Got ${markdown.length} chars of profile content, login_wall_suspected=${looksLikeLoginWall} generation_id=${generationId}`);
-      if (looksLikeLoginWall) {
-        console.log(`[LinkedIn] Content snippet: ${markdown.substring(0, 300)} generation_id=${generationId}`);
-      }
-      return markdown;
-    }
-    
-    console.log(`[LinkedIn] No markdown content returned generation_id=${generationId}`);
-    return null;
-  } catch (e) {
-    console.error(`[LinkedIn] Scrape error: ${e} generation_id=${generationId}`);
-    return null;
-  }
-}
-
-async function extractLinkedInSignals(
-  profileMarkdown: string,
-  recipientName: string,
-  LOVABLE_API_KEY: string,
-): Promise<LinkedInSignals | null> {
-  console.log("[LinkedIn] Extracting signals from profile content");
-  
-  const extractionPrompt = `Extract structured information from this LinkedIn profile for "${recipientName}".
-
-LINKEDIN PROFILE CONTENT:
-${profileMarkdown.substring(0, 6000)}
-
-Extract the following (be precise, only include what's explicitly stated):
-
-1. EDUCATION: List schools, degrees, years (e.g., "Stanford MBA 2015", "MIT Computer Science")
-2. PAST COMPANIES: List previous employers (not current company) with roles if mentioned
-3. SKILLS: Top 5-8 notable skills or endorsements
-4. CERTIFICATIONS: Any certifications or special qualifications
-5. HEADLINE: Their LinkedIn headline/tagline if visible
-
-Return JSON only:
-{
-  "education": ["Stanford MBA 2015", "MIT BS Computer Science 2010"],
-  "past_companies": ["McKinsey", "Google", "Stripe"],
-  "skills": ["Product Management", "Strategy", "ML/AI"],
-  "certifications": ["CFA", "PMP"],
-  "headline": "VP Product at Company | Ex-Google"
-}
-
-If a field has no data, use empty array. Be conservative - only include what's clearly stated.`;
-
-  try {
-    const response = await callLLM(
-      LOVABLE_API_KEY,
-      "You extract structured data from LinkedIn profiles. Be precise and conservative.",
-      extractionPrompt,
-      RESEARCH_MODEL_NAME,
-    );
-    
-    const cleaned = response.replace(/```json\n?|\n?```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-    
-    const signals: LinkedInSignals = {
-      education: parsed.education || [],
-      past_companies: parsed.past_companies || [],
-      skills: parsed.skills || [],
-      certifications: parsed.certifications || [],
-      headline: parsed.headline || undefined,
-      profile_url: "",
-    };
-    
-    console.log("[LinkedIn] Extracted signals:", {
-      education: signals.education.length,
-      past_companies: signals.past_companies.length,
-      skills: signals.skills.length,
-    });
-    
-    return signals;
-  } catch (e) {
-    console.error("[LinkedIn] Signal extraction failed:", e);
-    return null;
-  }
-}
-
-async function enrichFingerprintFromLinkedIn(
-  recipientName: string,
-  recipientCompany: string,
-  exaApiKey: string,
-  LOVABLE_API_KEY: string,
-  generationId: string,
-): Promise<{ signals: LinkedInSignals | null; profileUrl: string | null }> {
-  console.log(`=== LinkedIn Enrichment for Disambiguators === generation_id=${generationId}`);
-  
-  // Step 1: Find LinkedIn profile URL
-  const profileUrl = await findLinkedInProfile(recipientName, recipientCompany, exaApiKey, generationId);
-  
-  if (!profileUrl) {
-    console.log(`[LinkedIn] No profile found, skipping enrichment generation_id=${generationId}`);
-    return { signals: null, profileUrl: null };
-  }
-  
-  // Step 2: Scrape the profile with Firecrawl
-  const profileMarkdown = await scrapeLinkedInProfile(profileUrl, generationId);
-  
-  if (!profileMarkdown) {
-    console.log(`[LinkedIn] Failed to scrape profile, skipping enrichment generation_id=${generationId}`);
-    return { signals: null, profileUrl };
-  }
-  
-  // Step 3: Extract structured signals
-  const signals = await extractLinkedInSignals(profileMarkdown, recipientName, LOVABLE_API_KEY);
-  
-  if (signals) {
-    signals.profile_url = profileUrl;
-    console.log(`[LinkedIn] Successfully extracted signals generation_id=${generationId}`);
-  }
-  
-  return { signals, profileUrl };
-}
-
-// ============= FIRECRAWL ENRICHMENT (Intent-Aware) =============
-
-// Research sufficiency thresholds
-const SUFFICIENCY_THRESHOLDS = {
-  MIN_USABLE_HOOKPACKS: 2,
-  MIN_INTENT_FIT: 0.7,
-  MIN_PROMISING_CANDIDATES: 3,
-  PROMISING_CANDIDATE_THRESHOLD: 0.35,
-};
-
-// Evidence types that count as "pointable"
-const POINTABLE_EVIDENCE_TYPES: EvidenceType[] = ["quote", "named_artifact", "named_initiative", "described_decision"];
-
-interface ResearchSufficiency {
-  isEnough: boolean;
-  usableHookPacks: number;
-  top2IntentFit: number;
-  hasPointableEvidence: boolean;
-  reasons: string[];
-}
-
-function checkResearchSufficiency(hookPacks: HookPack[]): ResearchSufficiency {
-  const reasons: string[] = [];
-
-  // Filter for usable hook packs (overall score >= 0.6)
-  const usableHookPacks = hookPacks.filter((hp) => hp.scores.overall >= 0.6);
-  const usableCount = usableHookPacks.length;
-
-  // Get top 2 intent_fit scores
-  const intentFits = hookPacks.map((hp) => hp.scores.intent_fit).sort((a, b) => b - a);
-  const top2IntentFit = intentFits.length >= 2 ? (intentFits[0] + intentFits[1]) / 2 : intentFits[0] || 0;
-
-  // Check for pointable evidence
-  const hasPointableEvidence = hookPacks.some(
-    (hp) => POINTABLE_EVIDENCE_TYPES.includes(hp.hook_fact.evidence_type) && hp.hook_fact.evidence.length > 20,
-  );
-
-  // Evaluate sufficiency
-  const hasEnoughHookPacks = usableCount >= SUFFICIENCY_THRESHOLDS.MIN_USABLE_HOOKPACKS;
-  const hasGoodIntent = top2IntentFit >= SUFFICIENCY_THRESHOLDS.MIN_INTENT_FIT;
-
-  if (!hasEnoughHookPacks)
-    reasons.push(`Only ${usableCount} usable hook packs (need ${SUFFICIENCY_THRESHOLDS.MIN_USABLE_HOOKPACKS})`);
-  if (!hasGoodIntent)
-    reasons.push(`Top intent_fit ${top2IntentFit.toFixed(2)} < ${SUFFICIENCY_THRESHOLDS.MIN_INTENT_FIT}`);
-  if (!hasPointableEvidence) reasons.push("No pointable evidence found");
-
-  const isEnough = hasEnoughHookPacks && hasGoodIntent && hasPointableEvidence;
-
-  return {
-    isEnough,
-    usableHookPacks: usableCount,
-    top2IntentFit,
-    hasPointableEvidence,
-    reasons,
-  };
-}
-
-function countPromisingCandidates(candidates: CandidateUrl[]): number {
-  return candidates.filter((c) => (c.intent_fit_score || 0) >= SUFFICIENCY_THRESHOLDS.PROMISING_CANDIDATE_THRESHOLD)
-    .length;
-}
-
-function isContentAbstract(text: string): boolean {
-  const wordCount = text
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length > 0).length;
-
-  if (wordCount < 200) return true;
-
-  const concreteIndicators = [
-    /[""][^""]{20,}[""]/,
-    /'[^']{20,}'/,
-    /\b(podcast|interview|talk|keynote|essay|article|book|paper)\b.*["'][^"']+["']/i,
-    /\b(in \d{4}|january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}/i,
-    /\$[\d.,]+\s*(million|billion|M|B)/i,
-    /\b(I think|I believe|we decided|I realized|we learned|I said|I wrote)\b/i,
-  ];
-
-  const hasConcreteEvidence = concreteIndicators.some((pattern) => pattern.test(text));
-
-  if (wordCount < 500 && !hasConcreteEvidence) return true;
-
-  return false;
-}
-
-async function enrichWithFirecrawl(url: string): Promise<string | null> {
-  const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
-
-  if (!firecrawlApiKey) {
-    console.log("FIRECRAWL_API_KEY not configured, skipping enrichment");
-    return null;
-  }
-
-  console.log("Firecrawl: fetching full content for", url);
-
-  try {
-    const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${firecrawlApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        url,
-        formats: ["markdown"],
-        onlyMainContent: true,
-        waitFor: 2000,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Firecrawl error:", response.status, errorText);
-      return null;
-    }
-
-    const data = await response.json();
-    const markdown = data.data?.markdown || data.markdown;
-
-    if (markdown) {
-      console.log("Firecrawl: got", markdown.length, "chars for", url);
-      return markdown;
-    }
-
-    return null;
-  } catch (e) {
-    console.error("Firecrawl fetch error:", e);
-    return null;
-  }
-}
-
-// NEW: Enrich only top-K candidates by intent score (not "anything abstract") - PARALLEL
-async function enrichTopCandidatesByIntent(
-  candidates: CandidateUrl[],
-  maxEnrichments: number = 2,
-): Promise<CandidateUrl[]> {
-  const t0 = Date.now();
-  console.log("=== Conditional Firecrawl Enrichment (Intent-Prioritized, Parallel) ===");
-
-  // Sort by intent_fit_score descending
-  const sortedByIntent = [...candidates].sort((a, b) => (b.intent_fit_score || 0) - (a.intent_fit_score || 0));
-
-  // Only consider top candidates that are also abstract
-  const enrichmentTargets = sortedByIntent
-    .filter((c) => (c.intent_fit_score || 0) >= SUFFICIENCY_THRESHOLDS.PROMISING_CANDIDATE_THRESHOLD)
-    .filter((c) => isContentAbstract(c.text))
-    .slice(0, maxEnrichments);
-
-  if (enrichmentTargets.length === 0) {
-    console.log("No candidates worth enriching (no high-intent abstract content)");
-    return candidates;
-  }
-
-  console.log(`Enriching ${enrichmentTargets.length} high-intent abstract candidates in parallel`);
-
-  // Run all Firecrawl calls in parallel
-  const enrichmentPromises = enrichmentTargets.map((target) =>
-    enrichWithFirecrawl(target.url).then((content) => ({ target, content })),
-  );
-  const enrichmentResults = await Promise.all(enrichmentPromises);
-
-  console.log(`Firecrawl parallel enrichment completed in ${Date.now() - t0}ms`);
-
-  const enrichedUrls = new Set<string>();
-  const enrichedCandidates: CandidateUrl[] = [];
-
-  for (const { target, content } of enrichmentResults) {
-    const enrichedContent = content;
-
-    if (enrichedContent && enrichedContent.length > target.text.length) {
-      enrichedUrls.add(target.url);
-      console.log(
-        `Enriched ${target.url}: ${target.text.length} -> ${enrichedContent.length} chars (intent_fit: ${(target.intent_fit_score || 0).toFixed(2)})`,
-      );
-    }
-
-    enrichedCandidates.push({
-      ...target,
-      text:
-        enrichedContent && enrichedContent.length > target.text.length
-          ? enrichedContent.substring(0, 8000)
-          : target.text,
-      reasons:
-        enrichedContent && enrichedContent.length > target.text.length
-          ? [...target.reasons, `ENRICHED: Firecrawl (intent_fit: ${(target.intent_fit_score || 0).toFixed(2)})`]
-          : target.reasons,
-    });
-  }
-
-  // Add non-enriched candidates back
-  for (const c of candidates) {
-    if (!enrichmentTargets.some((t) => t.url === c.url)) {
-      enrichedCandidates.push(c);
-    }
-  }
-
-  console.log(
-    `Enriched ${enrichedUrls.size} of ${enrichmentTargets.length} targeted candidates in ${Date.now() - t0}ms`,
-  );
-  return enrichedCandidates;
-}
+// ============= VALIDATION =============
 
 function countWords(text: string): number {
-  return text
-    .trim()
-    .split(/\s+/)
-    .filter((w) => w.length > 0).length;
+  return text.trim().split(/\s+/).filter((w) => w.length > 0).length;
 }
 
 function hasEmDash(text: string): boolean {
@@ -2157,7 +987,6 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     if (likeYouSentence) {
       const lowerSentence = likeYouSentence.toLowerCase();
       
-      // Check for generic patterns
       for (const pattern of GENERIC_LIKE_YOU_PATTERNS) {
         if (lowerSentence.includes(pattern)) {
           errors.push(`The "Like you," sentence contains generic phrase "${pattern}"`);
@@ -2165,8 +994,6 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
         }
       }
       
-      // Check for banned belief/value verbs - these make it sound like a mission statement
-      // Use word boundaries to avoid false positives (e.g., "care" matching "career")
       for (const verb of BANNED_LIKE_YOU_VERBS) {
         const verbRegex = new RegExp(`\\b${verb}\\b`, 'i');
         if (verbRegex.test(likeYouSentence)) {
@@ -2189,10 +1016,7 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     errors.push("Contains bracket placeholders like [Name]");
   }
 
-  const bodyLines = body
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+  const bodyLines = body.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   if (bodyLines.length > 0) {
     const firstLine = bodyLines[0];
     const validGreeting1 = `Hi ${recipientFirstName},`;
@@ -2228,14 +1052,12 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     errors.push(`Body has ${wordCount} words (maximum 150 allowed—shorter is better)`);
   }
 
-  // Check for corporate padding phrases
   for (const phrase of CORPORATE_PADDING_PHRASES) {
     if (combinedText.toLowerCase().includes(phrase)) {
       errors.push(`Contains corporate padding phrase: "${phrase}"`);
     }
   }
 
-  // Check for robotic/generic voice patterns
   const roboticMatches: string[] = [];
   for (const pattern of ROBOTIC_VOICE_PATTERNS) {
     if (combinedText.toLowerCase().includes(pattern)) {
@@ -2246,97 +1068,49 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     errors.push(`Sounds robotic/generic. Remove: "${roboticMatches[0]}". Write like you'd text a friend.`);
   }
 
-  // Check for overly long sentences (sign of padding)
   const sentences = body.split(/[.!?]+/).filter((s) => s.trim().length > 0);
   for (const sentence of sentences) {
     const sentenceWords = countWords(sentence);
     if (sentenceWords > 35) {
       errors.push(`Contains a ${sentenceWords}-word sentence (max 35). Break it up.`);
-      break; // Only flag once
+      break;
     }
   }
 
-  // Check for lack of concrete nouns (abstract padding detection)
   const likeYouSentenceForAbstraction = extractSentenceWithLikeYou(body);
   if (likeYouSentenceForAbstraction) {
-    // Flag if Like you sentence is too long (sign of corporate speak)
     const likeYouWords = countWords(likeYouSentenceForAbstraction);
     if (likeYouWords > 30) {
       errors.push(`"Like you," sentence is ${likeYouWords} words (aim for under 25)`);
     }
   }
 
-  // ============= OPENING SENTENCE VALIDATION =============
-  // Extract first content sentence (after greeting)
-  const contentLines = bodyLines.slice(1).filter((l) => l !== "Best,"); // Skip greeting and sign-off
+  // Opening sentence validation
+  const contentLines = bodyLines.slice(1).filter((l) => l !== "Best,");
   if (contentLines.length > 0) {
     const firstParagraph = contentLines[0];
-    // Get first sentence from first paragraph
     const firstSentenceMatch = firstParagraph.match(/^[^.!?]+[.!?]/);
     const firstSentence = firstSentenceMatch ? firstSentenceMatch[0].toLowerCase() : firstParagraph.toLowerCase();
 
-    // Banned opening patterns (discovery openers)
     const BANNED_OPENING_PATTERNS = [
-      // Discovery openers
-      /^i read\b/,
-      /^i saw\b/,
-      /^i came across\b/,
-      /^i found\b/,
-      /^i noticed\b/,
-      /^i stumbled\b/,
-      /^i discovered\b/,
-      /^i was reading\b/,
-      /^i was looking\b/,
-      // Reach-out openers
-      /^i wanted to reach out\b/,
-      /^reaching out\b/,
-      /^i'm reaching out\b/,
-      /^i'm writing\b/,
-      // Meta openers
-      /^i'll keep this short\b/,
-      /^quick question\b/,
-      /^quick note\b/,
-      /^random question\b/,
-      // Hedging/flattery
-      /^this might be out of the blue\b/,
-      /^i'm a huge fan\b/,
-      /^i've long admired\b/,
-      /^i've been following\b/,
-      // Self-intro openers (banned as first sentence)
-      /^i'm a\b/,
-      /^i am a\b/,
-      /^i'm an\b/,
-      /^i am an\b/,
-      /^my name is\b/,
-      /^i work at\b/,
-      /^i work as\b/,
-      /^i just finished\b/,
-      /^i'm working on\b/,
-      /^i'm building\b/,
-      /^i'm currently\b/,
+      /^i read\b/, /^i saw\b/, /^i came across\b/, /^i found\b/, /^i noticed\b/,
+      /^i stumbled\b/, /^i discovered\b/, /^i was reading\b/, /^i was looking\b/,
+      /^i wanted to reach out\b/, /^reaching out\b/, /^i'm reaching out\b/, /^i'm writing\b/,
+      /^i'll keep this short\b/, /^quick question\b/, /^quick note\b/, /^random question\b/,
+      /^this might be out of the blue\b/, /^i'm a huge fan\b/, /^i've long admired\b/, /^i've been following\b/,
+      /^i'm a\b/, /^i am a\b/, /^i'm an\b/, /^i am an\b/, /^my name is\b/,
+      /^i work at\b/, /^i work as\b/, /^i just finished\b/, /^i'm working on\b/, /^i'm building\b/, /^i'm currently\b/,
     ];
 
-    // Check for self-intro pattern (different error message)
     const SELF_INTRO_PATTERNS = [
-      /^i'm a\b/,
-      /^i am a\b/,
-      /^i'm an\b/,
-      /^i am an\b/,
-      /^my name is\b/,
-      /^i work at\b/,
-      /^i work as\b/,
-      /^i just finished\b/,
-      /^i'm working on\b/,
-      /^i'm building\b/,
-      /^i'm currently\b/,
+      /^i'm a\b/, /^i am a\b/, /^i'm an\b/, /^i am an\b/, /^my name is\b/,
+      /^i work at\b/, /^i work as\b/, /^i just finished\b/, /^i'm working on\b/, /^i'm building\b/, /^i'm currently\b/,
     ];
 
     let foundBanned = false;
     for (const pattern of SELF_INTRO_PATTERNS) {
       if (pattern.test(firstSentence)) {
-        errors.push(
-          `Opening sentence is self-intro — lead with what you're OFFERING (event/product/ask), not who you ARE. Save credentials for paragraph 2.`,
-        );
+        errors.push(`Opening sentence is self-intro — lead with what you're OFFERING (event/product/ask), not who you ARE.`);
         foundBanned = true;
         break;
       }
@@ -2345,13 +1119,7 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
     if (!foundBanned) {
       for (const pattern of BANNED_OPENING_PATTERNS) {
         if (pattern.test(firstSentence)) {
-          const patternText = pattern
-            .toString()
-            .replace(/^\/\^|\\b\/$/g, "")
-            .replace(/\\/g, "");
-          errors.push(
-            `Opening sentence starts with "${patternText}..." — lead with sender-side news or a specific detail, not the act of reading/reaching out`,
-          );
+          errors.push(`Opening sentence starts with banned pattern — lead with sender-side news or a specific detail`);
           break;
         }
       }
@@ -2370,99 +1138,6 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
 function buildRetryInstruction(errors: string[], recipientFirstName?: string): string {
   const errorList = errors.map((e) => `- ${e}`).join("\n");
 
-  // Check for greeting error
-  const greetingError = errors.find((e) => e.includes("Greeting must start with"));
-  let greetingGuidance = "";
-
-  if (greetingError && recipientFirstName) {
-    greetingGuidance = `
-CRITICAL - GREETING REQUIRED:
-Your email body MUST start with "Hi ${recipientFirstName}," on its own line.
-
-CORRECT FORMAT:
-Hi ${recipientFirstName},
-
-[First sentence here - what you're offering/doing, NOT who you are]
-
-Like you, [natural bridge sentence]...
-
-[Brief credibility]...
-
-[Ask]
-
-Best,
-
-DO NOT start the body with content directly. The greeting line "Hi ${recipientFirstName}," is REQUIRED as the very first line.
-`;
-  }
-
-  // Extract specific robotic phrase from error message
-  const roboticError = errors.find((e) => e.includes("Sounds robotic/generic"));
-  let roboticGuidance = "";
-
-  if (roboticError) {
-    // Extract the phrase from: 'Sounds robotic/generic. Remove: "caught my attention". Write like...'
-    const phraseMatch = roboticError.match(/Remove: "([^"]+)"/);
-    const badPhrase = phraseMatch ? phraseMatch[1] : null;
-
-    roboticGuidance = `
-CRITICAL - ROBOTIC VOICE FIX:
-${badPhrase ? `DO NOT USE THIS PHRASE: "${badPhrase}"` : "Remove the robotic phrase."}
-
-Instead:
-- Reference specific content: "Your Afrotech piece on device access" (not "I came across your work")
-- Make direct statements: "I organize the Stanford Black Business Conference" (not "I wanted to reach out")
-- Be casual: "Wanted to ask" (not "I would love to discuss")
-${badPhrase ? `\nTHE PHRASE "${badPhrase}" MUST NOT APPEAR IN YOUR OUTPUT.` : ""}
-`;
-  }
-
-  // Check for opening sentence error
-  const openingError = errors.find((e) => e.includes("Opening sentence starts with"));
-  let openingGuidance = "";
-
-  if (openingError) {
-    openingGuidance = `
-CRITICAL - OPENING SENTENCE FIX:
-DO NOT START WITH: "I read...", "I saw...", "I'll keep this short", "Quick question", "I wanted to reach out"
-DO NOT START WITH: "I'm a...", "I'm an...", "I just finished...", "I'm working on...", "My name is..."
-
-YOUR FIRST SENTENCE (after "Hi [Name],") MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
-❌ "I'm a VC Fellow at PayPal Ventures..." 
-✅ "PayPal Ventures is deepening its gig economy thesis in LATAM."
-
-❌ "I'm working on a short film about underdogs..."
-✅ "I have a two-minute proof-of-concept for an underdog film."
-
-❌ "I just finished my MBA..."
-✅ "I'm at a crossroads figuring out how to be most effective in climate work."
-
-Lead with the OFFER/EVENT/ASK or a SPECIFIC DETAIL from their work. Save your credentials for paragraph 2.
-`;
-  }
-
-  // Check for self-intro specific error
-  const selfIntroError = errors.find((e) => e.includes("self-intro") || e.includes("who you ARE"));
-  if (selfIntroError && !openingError) {
-    openingGuidance = `
-CRITICAL - SELF-INTRO OPENING FIX:
-DO NOT START WITH: "I'm a...", "I just finished...", "I'm working on...", "My name is..."
-
-YOUR FIRST SENTENCE (after "Hi [Name],") MUST BE WHAT YOU'RE OFFERING, NOT WHO YOU ARE:
-❌ "I'm a VC Fellow at PayPal Ventures..." 
-✅ "PayPal Ventures is deepening its gig economy thesis in LATAM."
-
-❌ "I'm working on a short film about underdogs..."
-✅ "I have a two-minute proof-of-concept for an underdog film."
-
-❌ "I just finished my dissertation research..."
-✅ "My dissertation research on GDPR enforcement just wrapped up, and I have fresh interview data to share."
-
-Lead with the OFFER/EVENT/ASK. Save your credentials for paragraph 2.
-`;
-  }
-
-  // Build greeting reminder for HARD FIXES
   const greetingReminder = recipientFirstName
     ? `- Email body MUST start with "Hi ${recipientFirstName}," on its own line`
     : '- Email body MUST start with "Hi [Name]," on its own line';
@@ -2471,7 +1146,7 @@ Lead with the OFFER/EVENT/ASK. Save your credentials for paragraph 2.
 
 REWRITE REQUIRED — your previous output had issues:
 ${errorList}
-${greetingGuidance}${roboticGuidance}${openingGuidance}
+
 VOICE REMINDER (most important):
 - Write like you're texting a smart friend, not drafting a memo
 - The "Like you," line should be the most NATURAL sentence, not the most formal
@@ -2498,112 +1173,6 @@ function getAskTypeLabel(askType: string): string {
     other: "other",
   };
   return labels[askType] || askType;
-}
-
-function getAffiliationTypeLabel(type: string): string {
-  const labels: Record<string, string> = {
-    school: "same school/university",
-    business_school: "same business school/MBA program",
-    company: "same previous company",
-    accelerator: "same accelerator/fellowship/program",
-    personal_characteristics: "shared personal characteristics (race, ethnicity, nationality)",
-    other: "other shared background",
-  };
-  return labels[type] || type;
-}
-
-// ============= PROFILE SUMMARY FALLBACK =============
-
-// ProfileSummary aggregates available info when no Hook Packs are found
-interface ProfileSummary {
-  current_role: string;
-  current_company: string;
-  education: string[]; // from LinkedIn
-  past_companies: string[]; // from LinkedIn
-  skills: string[]; // from LinkedIn
-  career_trajectory?: string; // synthesized summary
-  company_context?: string; // what the company does
-  likely_interests: string[]; // from bridge hypotheses
-  source: "linkedin" | "fingerprint" | "hypothesis" | "mixed";
-}
-
-function buildProfileSummary(
-  recipientRole: string,
-  recipientCompany: string,
-  fingerprint: IdentityFingerprint | null,
-  hypotheses: BridgeHypothesis[],
-  candidateUrls: CandidateUrl[],
-): ProfileSummary {
-  console.log("=== Building Profile Summary Fallback ===");
-
-  const summary: ProfileSummary = {
-    current_role: recipientRole,
-    current_company: recipientCompany,
-    education: [],
-    past_companies: [],
-    skills: [],
-    likely_interests: [],
-    source: "fingerprint",
-  };
-
-  // Extract LinkedIn-derived signals from fingerprint
-  if (fingerprint) {
-    summary.education = fingerprint.linkedin_education || [];
-    summary.past_companies = fingerprint.linkedin_past_companies || [];
-    summary.skills = fingerprint.linkedin_skills || [];
-
-    if (summary.education.length > 0 || summary.past_companies.length > 0) {
-      summary.source = "linkedin";
-    }
-
-    // Build career trajectory if we have past companies
-    if (summary.past_companies.length > 0) {
-      const trajectory = summary.past_companies.slice(0, 3).join(" → ");
-      summary.career_trajectory = `${trajectory} → ${recipientCompany}`;
-    }
-  }
-
-  // Extract likely interests from bridge hypotheses
-  if (hypotheses.length > 0) {
-    summary.likely_interests = hypotheses
-      .map((h) => h.theme)
-      .filter((t) => t && t.length > 0);
-    
-    if (summary.source === "fingerprint" && summary.likely_interests.length > 0) {
-      summary.source = "hypothesis";
-    } else if (summary.source === "linkedin" && summary.likely_interests.length > 0) {
-      summary.source = "mixed";
-    }
-  }
-
-  // Extract company context from PASS_LOW candidates (if any mention the company)
-  const passLowCandidates = candidateUrls.filter(
-    (c) => c.passed_niche_gate && c.identity_decision === "PASS_LOW"
-  );
-  
-  if (passLowCandidates.length > 0) {
-    // Look for company description in candidate text
-    const companyMentions = passLowCandidates
-      .map((c) => c.text.substring(0, 500))
-      .join(" ")
-      .toLowerCase();
-    
-    // Simple extraction - could be enhanced with LLM
-    if (companyMentions.includes(recipientCompany.toLowerCase())) {
-      summary.company_context = `Works at ${recipientCompany}`;
-    }
-  }
-
-  console.log("Profile Summary built:", {
-    source: summary.source,
-    education: summary.education.length,
-    past_companies: summary.past_companies.length,
-    skills: summary.skills.length,
-    likely_interests: summary.likely_interests.length,
-    has_trajectory: !!summary.career_trajectory,
-  });
-
-  return summary;
 }
 
 function buildProfileSummaryPromptSection(summary: ProfileSummary): string {
@@ -2638,417 +1207,18 @@ We could not find specific interviews, podcasts, or quotes from this person.
 DO NOT fabricate specific facts, quotes, or initiatives.
 
 For your "Like you," line, use ONE of these approaches:
-1. SHARED TRAJECTORY: If you share a similar career path (same past company, school, or industry transition)
-   Example: "Like you, I made the jump from consulting to tech and never looked back."
-
+1. SHARED TRAJECTORY: If you share a similar career path
 2. SHARED DOMAIN: If you work in the same space/industry
-   Example: "Like you, I spend my days thinking about how fintech can actually reach the unbanked."
-
 3. SHARED CHALLENGE: Reference a challenge common to their role
-   Example: "Like you, I've learned that scaling a product team is harder than scaling the product."
 
-DO NOT USE generic phrases like "Like you, I'm passionate about..." or "Like you, I believe in..."
-The "Like you," must reference something CONCRETE about your shared experience.`);
+DO NOT USE generic phrases like "Like you, I'm passionate about..." or "Like you, I believe in..."`);
 
   return sections.join("\n");
-}
-
-// ============= V2 RESEARCH PIPELINE (INTENT-DRIVEN) =============
-
-interface V2ResearchResult {
-  hookPacks: HookPack[];
-  senderIntentProfile: SenderIntentProfile | null;
-  identityFingerprint: IdentityFingerprint | null;
-  bridgeHypotheses: BridgeHypothesis[];
-  candidateUrls: CandidateUrl[];
-  queriesUsed: string[];
-  exaResults: ExaResult[];
-  selectedSources: string[];
-  profileSummary?: ProfileSummary; // NEW: fallback when no Hook Packs
-  minimalResearch: boolean; // NEW: flag for email generation
-  notes?: string;
-}
-
-async function performV2Research(
-  recipientName: string,
-  recipientCompany: string,
-  recipientRole: string,
-  reachingOutBecause: string,
-  credibilityStory: string,
-  askType: AskType,
-  exaApiKey: string,
-  LOVABLE_API_KEY: string,
-  generationId: string,
-): Promise<V2ResearchResult> {
-  console.log(`=== V2 Intent-Driven Research Pipeline === generation_id=${generationId}`);
-
-  const queriesUsed: string[] = [];
-  let allExaResults: ExaResult[] = [];
-
-  // Stage 0 is now run in parallel with Stage 1A below
-
-  // ============= STAGE 0 + 1A: Run in parallel =============
-  // Stage 0: Extract sender intent profile (needs sender context only)
-  // Stage 1A: Identity search (needs recipient info only)
-  // These are independent, so run them in parallel
-
-  console.log("=== Stage 0 + 1A: Running in parallel ===");
-  const t_parallel_start = Date.now();
-
-  const identityQueries = [
-    `"${recipientName}" "${recipientCompany}" bio`,
-    `"${recipientName}" "${recipientCompany}" "${recipientRole}"`,
-  ];
-
-  // Run intent profile extraction AND identity queries in parallel
-  const [intentProfile, ...identitySearchResults] = await Promise.all([
-    extractSenderIntentProfile(reachingOutBecause, credibilityStory, askType, LOVABLE_API_KEY),
-    ...identityQueries.map((q) => exaSearchWithContent(q, exaApiKey, 5)),
-  ]);
-
-  console.log(`Stage 0 + 1A parallel completed in ${Date.now() - t_parallel_start}ms`);
-
-  // Process identity results
-  queriesUsed.push(...identityQueries);
-  let identityResults: ExaResult[] = identitySearchResults.flat();
-  allExaResults = [...allExaResults, ...identityResults];
-
-  // Dedupe by URL
-  const seenUrls = new Set<string>();
-  identityResults = identityResults.filter((r) => {
-    if (seenUrls.has(r.url)) return false;
-    seenUrls.add(r.url);
-    return true;
-  });
-
-  console.log(`Identity search found ${identityResults.length} unique results`);
-
-  console.log("Sender Intent Profile:", {
-    primary_theme: intentProfile.primary_theme,
-    must_include_terms: intentProfile.must_include_terms.slice(0, 5),
-  });
-
-  // ============= STAGE 1B: Extract fingerprint first =============
-  console.log(`=== Stage 1B: Extract Identity Fingerprint === generation_id=${generationId}`);
-  const t_1b_start = Date.now();
-
-  const fingerprintResult = await extractIdentityFingerprint(
-    recipientName,
-    recipientCompany,
-    recipientRole,
-    identityResults,
-    LOVABLE_API_KEY,
-  );
-
-  const { fingerprint: baseFingerprint, confidence } = fingerprintResult;
-  console.log(`Stage 1B fingerprint extraction completed in ${Date.now() - t_1b_start}ms, confidence=${confidence} generation_id=${generationId}`);
-
-  // ============= LINKEDIN ENRICHMENT GATING =============
-  // Log gating decision before attempting LinkedIn enrichment
-  const disambiguatorsForGating = buildDisambiguators(baseFingerprint);
-  const linkedInGatingDecision = {
-    enabled: LINKEDIN_ENRICHMENT_ENABLED,
-    identity_confidence: confidence,
-    threshold: LINKEDIN_IDENTITY_THRESHOLD,
-    attempt: LINKEDIN_ENRICHMENT_ENABLED && confidence < LINKEDIN_IDENTITY_THRESHOLD,
-    reason: !LINKEDIN_ENRICHMENT_ENABLED 
-      ? "disabled_env" 
-      : confidence >= LINKEDIN_IDENTITY_THRESHOLD 
-        ? "identity_confidence_ok" 
-        : "below_threshold_attempting",
-    disambiguators_present: {
-      tier1_count: disambiguatorsForGating.tier1.length,
-      tier2_count: disambiguatorsForGating.tier2.length,
-      any: disambiguatorsForGating.tier1.length > 0 || disambiguatorsForGating.tier2.length > 0,
-    },
-  };
-  
-  console.log(`linkedin_enrich: ${JSON.stringify(linkedInGatingDecision)} generation_id=${generationId}`);
-
-  // Attempt LinkedIn enrichment based on gating decision
-  let linkedInSignals: LinkedInSignals | null = null;
-  let linkedInUrl: string | null = null;
-
-  if (linkedInGatingDecision.attempt) {
-    try {
-      const t_linkedin_start = Date.now();
-      const linkedInResult = await enrichFingerprintFromLinkedIn(
-        recipientName, 
-        recipientCompany, 
-        exaApiKey, 
-        LOVABLE_API_KEY,
-        generationId,
-      );
-      linkedInSignals = linkedInResult.signals;
-      linkedInUrl = linkedInResult.profileUrl;
-      console.log(`[LinkedIn] Enrichment completed in ${Date.now() - t_linkedin_start}ms generation_id=${generationId}`);
-    } catch (e) {
-      console.error(`[LinkedIn] enrichment_error: ${e} generation_id=${generationId}`);
-      // Continue pipeline without LinkedIn signals
-    }
-  }
-
-  // Merge LinkedIn signals into fingerprint
-  const fingerprint: IdentityFingerprint = {
-    ...baseFingerprint,
-    linkedin_url: linkedInUrl || undefined,
-    linkedin_education: linkedInSignals?.education || [],
-    linkedin_past_companies: linkedInSignals?.past_companies || [],
-    linkedin_skills: linkedInSignals?.skills || [],
-    // Add past companies to company_variants for better identity matching
-    company_variants: [
-      ...(baseFingerprint.company_variants || []),
-      ...(linkedInSignals?.past_companies || []),
-    ],
-  };
-
-  console.log(`Identity fingerprint merged: linkedin_education=${fingerprint.linkedin_education?.length || 0} linkedin_past_companies=${fingerprint.linkedin_past_companies?.length || 0} generation_id=${generationId}`);
-  console.log(`Identity confidence: ${confidence} generation_id=${generationId}`);
-
-  if (linkedInSignals) {
-    console.log(`[LinkedIn] Enriched fingerprint with: education=${linkedInSignals.education.length} past_companies=${linkedInSignals.past_companies.length} skills=${linkedInSignals.skills.length} generation_id=${generationId}`);
-  }
-
-  // Exit if identity confidence too low
-  if (confidence < 0.4) {
-    console.log("STOPPING: Identity confidence too low");
-    return {
-      hookPacks: [],
-      senderIntentProfile: intentProfile,
-      identityFingerprint: fingerprint,
-      bridgeHypotheses: [],
-      candidateUrls: [],
-      queriesUsed,
-      exaResults: allExaResults,
-      selectedSources: [],
-      minimalResearch: true,
-      notes: "Research stopped: could not confidently identify recipient. Name may be ambiguous.",
-    };
-  }
-
-  // ============= STAGE 2: Generate bridge hypotheses =============
-  const hypotheses = await generateBridgeHypotheses(
-    reachingOutBecause,
-    credibilityStory,
-    recipientRole,
-    recipientCompany,
-    intentProfile,
-    LOVABLE_API_KEY,
-  );
-
-  console.log(
-    "Bridge hypotheses:",
-    hypotheses.map((h) => ({ type: h.type, theme: h.theme, keywords: h.keywords.slice(0, 3) })),
-  );
-
-  // ============= STAGE 3: Iterative Candidate Discovery =============
-  const {
-    candidates,
-    queriesUsed: discoveryQueries,
-    scoredCandidates,
-  } = await discoverCandidatesV2(recipientName, fingerprint, hypotheses, intentProfile, exaApiKey);
-
-  queriesUsed.push(...discoveryQueries);
-  allExaResults = [...allExaResults, ...candidates];
-
-  // ============= STAGE 4 & 5: Niche gate + Identity Confidence Scoring =============
-  console.log("=== Stage 4 & 5: Niche Gate + Identity Confidence Scoring ===");
-
-  // Log disambiguators once for debugging
-  const disambiguators = buildDisambiguators(fingerprint);
-  console.log(`[identity] Disambiguators tier1=${JSON.stringify(disambiguators.tier1)} tier2=${JSON.stringify(disambiguators.tier2)}`);
-
-  const candidateUrls: CandidateUrl[] = [];
-  const eligibleCandidates: CandidateUrl[] = [];
-
-  // Create a map of intent_fit scores from discovery
-  const intentFitMap = new Map(scoredCandidates.map((s) => [s.url, s.intent_fit]));
-
-  // Track gate failure reasons for debugging
-  let nicheGateFailures = 0;
-  let identityFailures = 0;
-  let passHighCount = 0;
-  let passLowCount = 0;
-
-  for (const c of candidates) {
-    // Stage 4: Niche gate
-    const nicheResult = applyNicheGate(c.url, c.title, c.snippet);
-
-    if (!nicheResult.passed) {
-      nicheGateFailures++;
-      candidateUrls.push({
-        url: c.url,
-        title: c.title,
-        text: c.text || "",
-        passed_niche_gate: false,
-        reasons: nicheResult.reasons,
-        identity_locked: false,
-        identity_confidence: 0,
-        identity_decision: "FAIL",
-        intent_fit_score: intentFitMap.get(c.url) || 0,
-      });
-      continue;
-    }
-
-    // Stage 5: Identity confidence scoring (replaces binary lock)
-    const identityResult = checkIdentityConfidence(c.text || c.snippet || "", recipientName, fingerprint);
-
-    const candidate: CandidateUrl = {
-      url: c.url,
-      title: c.title,
-      text: c.text || "",
-      passed_niche_gate: true,
-      reasons: [...nicheResult.reasons, ...identityResult.reasons],
-      identity_locked: identityResult.locked,
-      identity_confidence: identityResult.score,
-      identity_decision: identityResult.decision,
-      identity_signals: identityResult.signals,
-      intent_fit_score: intentFitMap.get(c.url) || 0,
-    };
-
-    candidateUrls.push(candidate);
-
-    // Log each candidate's identity check for debugging
-    console.log(`[identity] url=${c.url.substring(0, 60)}... score=${identityResult.score.toFixed(2)} decision=${identityResult.decision}`);
-
-    if (identityResult.locked) {
-      eligibleCandidates.push(candidate);
-      if (identityResult.decision === "PASS_HIGH") passHighCount++;
-      else if (identityResult.decision === "PASS_LOW") passLowCount++;
-    } else {
-      identityFailures++;
-    }
-  }
-
-  // Log gate breakdown summary
-  console.log(`Gate breakdown: ${nicheGateFailures} failed niche gate, ${identityFailures} failed identity confidence`);
-  console.log(`Passed: ${passHighCount} PASS_HIGH, ${passLowCount} PASS_LOW`);
-  console.log(`${eligibleCandidates.length} candidates passed niche gate + identity check`);
-
-  // Log sample failures for debugging (only if we have failures)
-  if (identityFailures > 0) {
-    const sampleFailures = candidateUrls
-      .filter(c => c.passed_niche_gate && !c.identity_locked)
-      .slice(0, 3);
-    console.log("Sample identity failures:");
-    sampleFailures.forEach(f => {
-      console.log(`  - ${f.url.substring(0, 50)}... signals=${JSON.stringify(f.identity_signals)}`);
-    });
-  }
-
-  // Sort eligible candidates by intent_fit_score (prioritize high-intent sources)
-  eligibleCandidates.sort((a, b) => (b.intent_fit_score || 0) - (a.intent_fit_score || 0));
-
-  // ============= STAGE 6A: FIRST PASS - Extract Hook Packs WITHOUT Firecrawl =============
-  console.log("=== Stage 6A: First-Pass Hook Pack Extraction (Exa content only) ===");
-
-  let hookPacks = await extractHookPacks(
-    recipientName,
-    recipientRole,
-    recipientCompany,
-    eligibleCandidates.slice(0, 6),
-    hypotheses,
-    intentProfile,
-    credibilityStory,
-    LOVABLE_API_KEY,
-  );
-
-  console.log(`First-pass extraction: ${hookPacks.length} Hook Packs`);
-
-  // ============= STAGE 6B: CHECK RESEARCH SUFFICIENCY =============
-  const sufficiency = checkResearchSufficiency(hookPacks);
-
-  console.log("=== Research Sufficiency Check ===");
-  console.log(`  Usable Hook Packs: ${sufficiency.usableHookPacks}`);
-  console.log(`  Top 2 Intent Fit: ${sufficiency.top2IntentFit.toFixed(2)}`);
-  console.log(`  Has Pointable Evidence: ${sufficiency.hasPointableEvidence}`);
-  console.log(`  Is Sufficient: ${sufficiency.isEnough}`);
-  if (!sufficiency.isEnough) {
-    console.log(`  Reasons: ${sufficiency.reasons.join("; ")}`);
-  }
-
-  // ============= STAGE 6C: CONDITIONAL FIRECRAWL ENRICHMENT =============
-  // Only enrich if: research insufficient AND we have promising candidates worth enriching
-
-  if (!sufficiency.isEnough) {
-    const promisingCount = countPromisingCandidates(eligibleCandidates);
-    console.log(
-      `Promising candidates (intent >= ${SUFFICIENCY_THRESHOLDS.PROMISING_CANDIDATE_THRESHOLD}): ${promisingCount}`,
-    );
-
-    if (promisingCount >= SUFFICIENCY_THRESHOLDS.MIN_PROMISING_CANDIDATES) {
-      console.log("=== Stage 6C: Conditional Firecrawl Enrichment ===");
-      console.log(`Enriching because: research insufficient AND ${promisingCount} promising candidates available`);
-
-      // Enrich top candidates by intent score (not "anything abstract")
-      const enrichedCandidates = await enrichTopCandidatesByIntent(
-        eligibleCandidates.slice(0, 6),
-        2, // Only enrich top 2
-      );
-
-      // ============= STAGE 6D: RE-EXTRACT Hook Packs with enriched content =============
-      console.log("=== Stage 6D: Re-Extracting Hook Packs (with enriched content) ===");
-
-      hookPacks = await extractHookPacks(
-        recipientName,
-        recipientRole,
-        recipientCompany,
-        enrichedCandidates,
-        hypotheses,
-        intentProfile,
-        credibilityStory,
-        LOVABLE_API_KEY,
-      );
-
-      console.log(`Post-enrichment extraction: ${hookPacks.length} Hook Packs`);
-
-      // Log improvement
-      const newSufficiency = checkResearchSufficiency(hookPacks);
-      console.log(
-        `Post-enrichment sufficiency: usable=${newSufficiency.usableHookPacks}, intent=${newSufficiency.top2IntentFit.toFixed(2)}, pointable=${newSufficiency.hasPointableEvidence}`,
-      );
-    } else {
-      console.log(
-        `Skipping Firecrawl: only ${promisingCount} promising candidates (need ${SUFFICIENCY_THRESHOLDS.MIN_PROMISING_CANDIDATES})`,
-      );
-    }
-  } else {
-    console.log("Skipping Firecrawl: research is already sufficient");
-  }
-
-  // Build profile summary if no Hook Packs found (fallback for personalization)
-  const isMinimalResearch = hookPacks.length === 0;
-  let profileSummary: ProfileSummary | undefined;
-
-  if (isMinimalResearch) {
-    profileSummary = buildProfileSummary(
-      recipientRole,
-      recipientCompany,
-      fingerprint,
-      hypotheses,
-      candidateUrls,
-    );
-    console.log("Built Profile Summary fallback for minimal research case");
-  }
-
-  return {
-    hookPacks,
-    senderIntentProfile: intentProfile,
-    identityFingerprint: fingerprint,
-    bridgeHypotheses: hypotheses,
-    candidateUrls,
-    queriesUsed,
-    exaResults: allExaResults.slice(0, 10),
-    selectedSources: eligibleCandidates.map((c) => c.url),
-    profileSummary,
-    minimalResearch: isMinimalResearch,
-  };
 }
 
 // ============= MAIN HANDLER =============
 
 serve(async (req) => {
-  // Generate unique ID for this request - used for log correlation
   const generationId = crypto.randomUUID();
   
   if (req.method === "OPTIONS") {
@@ -3073,10 +1243,9 @@ serve(async (req) => {
     const sessionId = body.sessionId || null;
     const includeDebug = body.includeDebug || source === "test_harness";
     
-    // BOOT log - first log line for every request
+    // BOOT log
     console.log(`BOOT generate-email deploy_version=${DEPLOY_VERSION} generation_id=${generationId} session_id=${sessionId}`);
     
-    // Build response headers helper for this request
     const responseHeaders = buildResponseHeaders(generationId);
 
     // Input validation
@@ -3138,11 +1307,11 @@ serve(async (req) => {
       });
     }
 
-    // ============= V2 INTENT-DRIVEN RESEARCH PIPELINE =============
+    // ============= V2 RESEARCH (SINGLE EXA RESEARCH CALL) =============
     let researchResult: V2ResearchResult | null = null;
 
     if (EXA_API_KEY) {
-      console.log("Starting V2 intent-driven research pipeline...");
+      console.log("Starting V2 research (Exa Research API)...");
 
       try {
         researchResult = await performV2Research(
@@ -3157,7 +1326,7 @@ serve(async (req) => {
           generationId,
         );
 
-        console.log(`V2 Research complete: ${researchResult.hookPacks.length} Hook Packs extracted`);
+        console.log(`V2 Research complete: ${researchResult.hookPacks.length} Hook Packs, identity=${researchResult.identityDecision}`);
       } catch (e) {
         console.error("V2 Research pipeline failed:", e);
       }
@@ -3171,27 +1340,17 @@ serve(async (req) => {
     // Build shared affiliation section if provided
     let sharedAffiliationSection = "";
     if (sharedAffiliation && sharedAffiliation.name) {
-      const affiliationTypes = (sharedAffiliation.types || [])
-        .map((t: string) => getAffiliationTypeLabel(t))
-        .join(", ");
-
       sharedAffiliationSection = `
 SHARED AFFILIATION (user-declared, use ONLY as last resort for "Like you," connection):
-- Connection type: ${affiliationTypes}
-- Shared institution or organization: ${sharedAffiliation.name}${
-        sharedAffiliation.detail
-          ? `
-- Sender's connection: ${sharedAffiliation.detail}`
-          : ""
-      }
+- Connection: ${sharedAffiliation.name}
+${sharedAffiliation.detail ? `- Sender's connection: ${sharedAffiliation.detail}` : ""}
 
-IMPORTANT: Only use this shared affiliation if no stronger craft/problem/constraint parallel exists.`;
+IMPORTANT: Only use this if no stronger craft/problem/constraint parallel exists.`;
     }
 
-    // Build Hook Packs section with improved voice guidance
+    // Build Hook Packs section
     let hookPacksSection = "";
     if (researchResult && researchResult.hookPacks.length > 0) {
-      // Sort by intent_fit and pick top 2 (primary + backup)
       const topHookPacks = [...researchResult.hookPacks]
         .sort((a, b) => b.scores.intent_fit - a.scores.intent_fit)
         .slice(0, 2);
@@ -3211,9 +1370,6 @@ ${topHookPacks
    - The world you share: ${hp.bridge.like_you_ingredients.shared_axis}
    - Why it matters: ${hp.bridge.like_you_ingredients.shared_stakes}
    
-   DRAFT (rewrite in your own voice, keep under 25 words):
-   "Like you, I [${hp.bridge.like_you_ingredients.shared_action}] because [${hp.bridge.like_you_ingredients.shared_stakes}]."
-   
    Intent fit: ${(hp.scores.intent_fit * 100).toFixed(0)}%
 `,
   )
@@ -3221,12 +1377,9 @@ ${topHookPacks
 
 INSTRUCTIONS:
 - Use the PRIMARY hook pack. It has the highest intent fit.
-- Only use BACKUP if the primary truly doesn't connect your story to theirs.
-- Rewrite the draft "Like you," line to sound natural—like you'd text it
-- Reference the specific fact somewhere in the email (show you did homework)
-- Don't use all ingredients if it sounds forced. Less is more.`;
+- Rewrite the "Like you," line to sound natural
+- Reference the specific fact somewhere in the email`;
     } else if (researchResult?.profileSummary) {
-      // Use Profile Summary fallback when no Hook Packs but we have LinkedIn/fingerprint data
       hookPacksSection = buildProfileSummaryPromptSection(researchResult.profileSummary);
     } else {
       hookPacksSection = `
@@ -3234,10 +1387,7 @@ NO RESEARCH AVAILABLE.
 Create the "Like you," bridge from:
 - The sender's own story (below)
 - What someone in ${recipientRole} at ${recipientCompany} likely cares about
-Keep it real—don't pretend you found something you didn't.
-
-IMPORTANT: DO NOT fabricate specific quotes, initiatives, or facts about the recipient.
-Use a trajectory-based or domain-based "Like you," line based on the sender's experience.`;
+Keep it real—don't pretend you found something you didn't.`;
     }
 
     const userPrompt = `Write a cold email. Sound human.
@@ -3255,7 +1405,7 @@ ${researchResult?.senderIntentProfile ? `- Theme: ${researchResult.senderIntentP
 REMEMBER:
 - Include "Like you," exactly once (capital L, comma)
 - Put the "Like you," line in paragraph 1 or 2
-- Readable in under 20 seconds. Shorter is better. Do not pad.
+- Readable in under 20 seconds. Shorter is better.
 - One clear ask at the end
 - End with just "Best," (no name after)
 - No em-dashes, no brackets, no corporate speak
@@ -3266,7 +1416,7 @@ Return JSON only:
   "body": "..."
 }`;
 
-    // Generate email with validation and retry logic
+    // Generate email with validation and retry
     let rawResponse: string;
     let validation: ValidationResult;
     const enforcementResults: EnforcementResults = {
@@ -3325,7 +1475,7 @@ Return JSON only:
       });
     }
 
-    // Parse the final response
+    // Parse final response
     let emailData: { subject: string; body: string };
     try {
       const cleanedContent = rawResponse.replace(/```json\n?|\n?```/g, "").trim();
@@ -3343,12 +1493,15 @@ Return JSON only:
     const clicheCount = countCliches(emailData.subject + " " + emailData.body);
     const likeYouCount = countLikeYouCapitalized(emailData.body);
 
-    // Log analytics with generation_id
+    // Log analytics
     console.log(`=== GENERATION ANALYTICS === generation_id=${generationId}`);
     console.log(`hook_packs: ${researchResult?.hookPacks.length || 0}`);
     console.log(`intent_profile: ${researchResult?.senderIntentProfile?.primary_theme || "none"}`);
-    console.log(`exa_queries: ${researchResult?.queriesUsed.length || 0}`);
-    console.log(`selected_sources: ${researchResult?.selectedSources.length || 0}`);
+    console.log(`exa_research_id: ${researchResult?.exaResearchId || "none"}`);
+    console.log(`exa_research_latency_ms: ${researchResult?.exaResearchLatencyMs || 0}`);
+    console.log(`identity_decision: ${researchResult?.identityDecision || "none"}`);
+    console.log(`identity_confidence: ${researchResult?.identityConfidence || 0}`);
+    console.log(`citations: ${researchResult?.citations.length || 0}`);
     console.log(`did_retry: ${enforcementResults.did_retry}`);
     console.log(`like_you_count: ${likeYouCount}`);
     console.log(`word_count: ${wordCount}`);
@@ -3357,7 +1510,7 @@ Return JSON only:
     console.log(`deploy_version: ${DEPLOY_VERSION}`);
     console.log(`============================`);
 
-    // Log to email_generations table
+    // Log to database
     try {
       const supabaseUrl = Deno.env.get("SUPABASE_URL");
       const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -3372,7 +1525,7 @@ Return JSON only:
           input_json: inputJson,
           prompt_version: PROMPT_VERSION,
           model_name: MODEL_NAME,
-          research_model_name: RESEARCH_MODEL_NAME,
+          research_model_name: "exa-research",
           subject: emailData.subject,
           body: emailData.body,
           word_count: wordCount,
@@ -3382,9 +1535,9 @@ Return JSON only:
           validator_passed: validation.valid,
           validator_errors: validation.errors.length > 0 ? validation.errors : null,
           enforcement_results: enforcementResults,
-          exa_queries: researchResult?.queriesUsed || [],
-          exa_results: researchResult?.exaResults.map((r) => ({ url: r.url, title: r.title })) || [],
-          selected_sources: researchResult?.selectedSources || [],
+          exa_queries: researchResult?.exaResearchId ? [researchResult.exaResearchId] : [],
+          exa_results: researchResult?.citations.map((c) => ({ url: c.url, title: c.title })) || [],
+          selected_sources: researchResult?.citations.map((c) => c.url) || [],
           researched_facts: researchResult?.hookPacks.map((hp) => hp.hook_fact.claim) || [],
           latency_ms: latencyMs,
         });
@@ -3400,18 +1553,14 @@ Return JSON only:
     // Build response
     const hookPacks = researchResult?.hookPacks || [];
 
-    // Map V2 hookPacks to legacy hookFacts format for UI compatibility
+    // Legacy format for UI
     const hookFacts = hookPacks.map((hp) => ({
       claim: hp.hook_fact.claim,
       source_url: hp.hook_fact.source_url,
       evidence_quote: hp.hook_fact.evidence,
       why_relevant: hp.bridge.why_relevant,
-      bridge_type:
-        hp.bridge.bridge_angle === "domain"
-          ? ("intent" as const)
-          : hp.bridge.bridge_angle === "value"
-            ? ("credibility" as const)
-            : ("curiosity" as const),
+      bridge_type: hp.bridge.bridge_angle === "domain" ? ("intent" as const) :
+                   hp.bridge.bridge_angle === "value" ? ("credibility" as const) : ("curiosity" as const),
       hook_score: Math.max(1, Math.min(5, Math.round(hp.scores.overall * 5))),
     }));
 
@@ -3419,10 +1568,10 @@ Return JSON only:
       subject: emailData.subject,
       body: emailData.body,
       hookPacks,
-      hookFacts, // Legacy format for UI display
-      exaQueries: researchResult?.queriesUsed || [],
-      exaResults: researchResult?.exaResults.map((r) => ({ url: r.url, title: r.title, snippet: r.snippet })) || [],
-      selectedSources: researchResult?.selectedSources || [],
+      hookFacts,
+      exaQueries: researchResult?.exaResearchId ? [researchResult.exaResearchId] : [],
+      exaResults: researchResult?.citations.map((c) => ({ url: c.url, title: c.title, snippet: "" })) || [],
+      selectedSources: researchResult?.citations.map((c) => c.url) || [],
       enforcementResults,
       validatorPassed: validation.valid,
       validatorErrors: validation.errors.length > 0 ? validation.errors : null,
@@ -3432,14 +1581,15 @@ Return JSON only:
       retryUsed: enforcementResults.did_retry,
     };
 
-    // Include debug info for test harness
+    // Debug info for test harness
     if (includeDebug && researchResult) {
       responsePayload.debug = {
         senderIntentProfile: researchResult.senderIntentProfile,
-        identityFingerprint: researchResult.identityFingerprint,
-        bridgeHypotheses: researchResult.bridgeHypotheses,
-        candidateUrls: researchResult.candidateUrls,
-        queriesUsed: researchResult.queriesUsed,
+        exaResearchId: researchResult.exaResearchId,
+        exaResearchLatencyMs: researchResult.exaResearchLatencyMs,
+        identityDecision: researchResult.identityDecision,
+        identityConfidence: researchResult.identityConfidence,
+        citations: researchResult.citations,
         notes: researchResult.notes,
       };
     }
