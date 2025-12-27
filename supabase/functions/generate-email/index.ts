@@ -209,6 +209,21 @@ interface IdentityFingerprint {
   role_keywords: string[];
   disambiguators: string[];
   confounders: { name: string; negative_keywords: string[] }[];
+  // NEW: LinkedIn-derived signals
+  linkedin_education?: string[]; // e.g. ["Stanford MBA", "MIT"]
+  linkedin_past_companies?: string[]; // e.g. ["McKinsey", "Google"]
+  linkedin_skills?: string[];
+  linkedin_url?: string;
+}
+
+// LinkedIn profile signals extracted from scraping
+interface LinkedInSignals {
+  education: string[];
+  past_companies: string[];
+  skills: string[];
+  certifications: string[];
+  headline?: string;
+  profile_url: string;
 }
 
 // NEW: Identity signals for confidence scoring
@@ -419,6 +434,14 @@ const TEMPLATE_LIBRARY = {
     `"{name}" {company} launched {keyword}`,
   ],
   general: [`"{name}" {company} "{keyword}"`, `"{name}" {company} {keyword}`],
+  // NEW: Name-required queries (no company filter) for finding person-specific content
+  name_required: [
+    `"{name}" interview`,
+    `"{name}" podcast`,
+    `"{name}" keynote OR talk OR panel`,
+    `"{name}" wrote OR writes OR essay`,
+    `"{name}" says OR said OR believes`,
+  ],
 };
 
 // ============= STAGE 0: SENDER INTENT PROFILE EXTRACTION =============
@@ -889,6 +912,17 @@ async function discoverCandidatesV2(
     laneAQueries.push(query);
   }
 
+  // ============= LANE A-PRIME: Name-required queries (no company filter) =============
+  // These find person-specific content like podcasts, interviews from previous roles
+  console.log("Lane A-Prime: Name-required queries (no company filter)");
+  const laneAPrimeQueries: string[] = [];
+  for (const template of TEMPLATE_LIBRARY.name_required) {
+    if (laneAPrimeQueries.length >= 3) break; // Max 3 name-only queries
+    let query = template.replace("{name}", recipientName);
+    if (negations) query = `${query} ${negations}`;
+    laneAPrimeQueries.push(query);
+  }
+
   // ============= LANE B: Primary intent theme queries (4-6 queries) - BUILD =============
   console.log("Lane B: Building primary intent theme queries");
   const laneB_templates = ["interview", "speech", "initiative"] as const;
@@ -909,22 +943,26 @@ async function discoverCandidatesV2(
     }
   }
 
-  // ============= RUN LANE A + B WITH RATE LIMITING =============
-  const allLaneABQueries = [...laneAQueries, ...laneBQueries];
-  queriesUsed.push(...allLaneABQueries);
+  // ============= RUN LANE A + A-PRIME + B WITH RATE LIMITING =============
+  const allLaneQueries = [...laneAQueries, ...laneAPrimeQueries, ...laneBQueries];
+  queriesUsed.push(...allLaneQueries);
 
   const t1 = Date.now();
-  console.log(`Running ${allLaneABQueries.length} Lane A+B queries with rate limiting`);
+  const laneACount = laneAQueries.length;
+  const laneAPrimeCount = laneAPrimeQueries.length;
+  console.log(`Running ${allLaneQueries.length} queries (Lane A: ${laneACount}, A-Prime: ${laneAPrimeCount}, B: ${laneBQueries.length}) with rate limiting`);
 
   // Create task functions for batching
-  const laneABTasks = allLaneABQueries.map(
-    (q, i) => () => exaSearchWithContent(q, exaApiKey, i < 2 ? 5 : 8), // Lane A gets 5, Lane B gets 8
-  );
-  const laneABResults = await batchWithRateLimit(laneABTasks, 4, 250);
+  // Lane A gets 5 results, Lane A-Prime gets 5, Lane B gets 8
+  const laneTasks = allLaneQueries.map((q, i) => {
+    const numResults = i < laneACount ? 5 : (i < laneACount + laneAPrimeCount ? 5 : 8);
+    return () => exaSearchWithContent(q, exaApiKey, numResults);
+  });
+  const laneResults = await batchWithRateLimit(laneTasks, 4, 250);
 
-  console.log(`Lane A+B rate-limited queries completed in ${Date.now() - t1}ms`);
+  console.log(`Lane A+A'+B rate-limited queries completed in ${Date.now() - t1}ms`);
 
-  for (const results of laneABResults) {
+  for (const results of laneResults) {
     for (const r of results) {
       if (!seenUrls.has(r.url)) {
         seenUrls.add(r.url);
@@ -941,7 +979,7 @@ async function discoverCandidatesV2(
   }));
 
   const highIntentCount = scoredCandidates.filter((c) => c.intent_fit >= 0.6 && c.identity_match).length;
-  console.log(`After Lane A+B: ${highIntentCount} high-intent candidates`);
+  console.log(`After Lanes A+A'+B: ${highIntentCount} high-intent candidates`);
 
   // Early stop if we have enough
   if (highIntentCount >= MIN_HIGH_INTENT_CANDIDATES) {
@@ -1125,7 +1163,7 @@ function isGenericDisambiguator(s: string): boolean {
   return generic.has(s);
 }
 
-// Build tiered disambiguators from fingerprint
+// Build tiered disambiguators from fingerprint (including LinkedIn-derived signals)
 function buildDisambiguators(fp: IdentityFingerprint): { tier1: string[]; tier2: string[] } {
   const t1: string[] = [];
   const t2: string[] = [];
@@ -1138,6 +1176,26 @@ function buildDisambiguators(fp: IdentityFingerprint): { tier1: string[]; tier2:
     t1.push(`${company}.com`);
   }
   (fp.company_variants ?? []).forEach(v => t1.push(v));
+
+  // NEW: LinkedIn-derived past companies are strong tier-1 disambiguators
+  (fp.linkedin_past_companies ?? []).forEach(c => {
+    const nc = normalizeToken(c);
+    if (nc.length >= 4 && !isGenericDisambiguator(nc)) {
+      t1.push(c);
+    }
+  });
+
+  // NEW: LinkedIn education is tier-1 (very distinctive)
+  (fp.linkedin_education ?? []).forEach(edu => {
+    // Extract school name from strings like "Stanford MBA 2015"
+    const parts = edu.split(/\s+/);
+    for (const part of parts) {
+      const np = normalizeToken(part);
+      if (np.length >= 4 && !isGenericDisambiguator(np) && !/^\d{4}$/.test(np)) {
+        t1.push(part);
+      }
+    }
+  });
 
   // Include LLM disambiguators, bucket them based on specificity
   (fp.disambiguators ?? []).forEach(d => {
@@ -1152,6 +1210,14 @@ function buildDisambiguators(fp: IdentityFingerprint): { tier1: string[]; tier2:
 
   // Tier 2 fallback: role keywords (only useful with pairing rule)
   (fp.role_keywords ?? []).forEach(r => t2.push(r));
+
+  // NEW: LinkedIn skills go to tier 2
+  (fp.linkedin_skills ?? []).forEach(skill => {
+    const ns = normalizeToken(skill);
+    if (ns.length >= 4) {
+      t2.push(skill);
+    }
+  });
 
   return {
     tier1: uniq(t1.map(normalizeToken)).filter(x => x.length > 3),
@@ -1571,6 +1637,201 @@ async function exaSearchWithContent(query: string, exaApiKey: string, numResults
     snippet: r.highlights?.join(" ") || "",
     text: r.text || "",
   }));
+}
+
+// ============= LINKEDIN ENRICHMENT FOR DISAMBIGUATORS =============
+
+async function findLinkedInProfile(
+  name: string,
+  company: string,
+  exaApiKey: string,
+): Promise<string | null> {
+  console.log(`[LinkedIn] Searching for LinkedIn profile: ${name} at ${company}`);
+  
+  const query = `site:linkedin.com/in "${name}" "${company}"`;
+  
+  try {
+    const response = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${exaApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        numResults: 3,
+        type: "neural",
+        useAutoprompt: false,
+      }),
+    });
+
+    if (!response.ok) {
+      console.log("[LinkedIn] Exa search failed:", response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    const results = data.results || [];
+    
+    // Find LinkedIn profile URL
+    for (const result of results) {
+      const url = result.url?.toLowerCase() || "";
+      if (url.includes("linkedin.com/in/")) {
+        console.log(`[LinkedIn] Found profile: ${result.url}`);
+        return result.url;
+      }
+    }
+    
+    console.log("[LinkedIn] No LinkedIn profile found in results");
+    return null;
+  } catch (e) {
+    console.error("[LinkedIn] Search error:", e);
+    return null;
+  }
+}
+
+async function scrapeLinkedInProfile(linkedInUrl: string): Promise<string | null> {
+  const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
+  
+  if (!firecrawlApiKey) {
+    console.log("[LinkedIn] FIRECRAWL_API_KEY not configured, skipping scrape");
+    return null;
+  }
+  
+  console.log(`[LinkedIn] Scraping profile: ${linkedInUrl}`);
+  
+  try {
+    const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${firecrawlApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: linkedInUrl,
+        formats: ["markdown"],
+        onlyMainContent: true,
+        waitFor: 3000, // LinkedIn can be slow
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("[LinkedIn] Firecrawl error:", response.status, errorText);
+      return null;
+    }
+
+    const data = await response.json();
+    const markdown = data.data?.markdown || data.markdown;
+    
+    if (markdown) {
+      console.log(`[LinkedIn] Got ${markdown.length} chars of profile content`);
+      return markdown;
+    }
+    
+    return null;
+  } catch (e) {
+    console.error("[LinkedIn] Scrape error:", e);
+    return null;
+  }
+}
+
+async function extractLinkedInSignals(
+  profileMarkdown: string,
+  recipientName: string,
+  LOVABLE_API_KEY: string,
+): Promise<LinkedInSignals | null> {
+  console.log("[LinkedIn] Extracting signals from profile content");
+  
+  const extractionPrompt = `Extract structured information from this LinkedIn profile for "${recipientName}".
+
+LINKEDIN PROFILE CONTENT:
+${profileMarkdown.substring(0, 6000)}
+
+Extract the following (be precise, only include what's explicitly stated):
+
+1. EDUCATION: List schools, degrees, years (e.g., "Stanford MBA 2015", "MIT Computer Science")
+2. PAST COMPANIES: List previous employers (not current company) with roles if mentioned
+3. SKILLS: Top 5-8 notable skills or endorsements
+4. CERTIFICATIONS: Any certifications or special qualifications
+5. HEADLINE: Their LinkedIn headline/tagline if visible
+
+Return JSON only:
+{
+  "education": ["Stanford MBA 2015", "MIT BS Computer Science 2010"],
+  "past_companies": ["McKinsey", "Google", "Stripe"],
+  "skills": ["Product Management", "Strategy", "ML/AI"],
+  "certifications": ["CFA", "PMP"],
+  "headline": "VP Product at Company | Ex-Google"
+}
+
+If a field has no data, use empty array. Be conservative - only include what's clearly stated.`;
+
+  try {
+    const response = await callLLM(
+      LOVABLE_API_KEY,
+      "You extract structured data from LinkedIn profiles. Be precise and conservative.",
+      extractionPrompt,
+      RESEARCH_MODEL_NAME,
+    );
+    
+    const cleaned = response.replace(/```json\n?|\n?```/g, "").trim();
+    const parsed = JSON.parse(cleaned);
+    
+    const signals: LinkedInSignals = {
+      education: parsed.education || [],
+      past_companies: parsed.past_companies || [],
+      skills: parsed.skills || [],
+      certifications: parsed.certifications || [],
+      headline: parsed.headline || undefined,
+      profile_url: "",
+    };
+    
+    console.log("[LinkedIn] Extracted signals:", {
+      education: signals.education.length,
+      past_companies: signals.past_companies.length,
+      skills: signals.skills.length,
+    });
+    
+    return signals;
+  } catch (e) {
+    console.error("[LinkedIn] Signal extraction failed:", e);
+    return null;
+  }
+}
+
+async function enrichFingerprintFromLinkedIn(
+  recipientName: string,
+  recipientCompany: string,
+  exaApiKey: string,
+  LOVABLE_API_KEY: string,
+): Promise<{ signals: LinkedInSignals | null; profileUrl: string | null }> {
+  console.log("=== LinkedIn Enrichment for Disambiguators ===");
+  
+  // Step 1: Find LinkedIn profile URL
+  const profileUrl = await findLinkedInProfile(recipientName, recipientCompany, exaApiKey);
+  
+  if (!profileUrl) {
+    console.log("[LinkedIn] No profile found, skipping enrichment");
+    return { signals: null, profileUrl: null };
+  }
+  
+  // Step 2: Scrape the profile with Firecrawl
+  const profileMarkdown = await scrapeLinkedInProfile(profileUrl);
+  
+  if (!profileMarkdown) {
+    console.log("[LinkedIn] Failed to scrape profile, skipping enrichment");
+    return { signals: null, profileUrl };
+  }
+  
+  // Step 3: Extract structured signals
+  const signals = await extractLinkedInSignals(profileMarkdown, recipientName, LOVABLE_API_KEY);
+  
+  if (signals) {
+    signals.profile_url = profileUrl;
+  }
+  
+  return { signals, profileUrl };
 }
 
 // ============= FIRECRAWL ENRICHMENT (Intent-Aware) =============
@@ -2294,17 +2555,54 @@ async function performV2Research(
     must_include_terms: intentProfile.must_include_terms.slice(0, 5),
   });
 
-  // ============= STAGE 1B: Extract identity fingerprint =============
-  const { fingerprint, confidence } = await extractIdentityFingerprint(
-    recipientName,
-    recipientCompany,
-    recipientRole,
-    identityResults,
-    LOVABLE_API_KEY,
-  );
+  // ============= STAGE 1B + LINKEDIN: Extract fingerprint + LinkedIn enrichment in parallel =============
+  console.log("=== Stage 1B + LinkedIn: Running in parallel ===");
+  const t_1b_start = Date.now();
 
-  console.log("Identity fingerprint:", fingerprint);
+  const [fingerprintResult, linkedInResult] = await Promise.all([
+    extractIdentityFingerprint(
+      recipientName,
+      recipientCompany,
+      recipientRole,
+      identityResults,
+      LOVABLE_API_KEY,
+    ),
+    enrichFingerprintFromLinkedIn(recipientName, recipientCompany, exaApiKey, LOVABLE_API_KEY),
+  ]);
+
+  const { fingerprint: baseFingerprint, confidence } = fingerprintResult;
+  const { signals: linkedInSignals, profileUrl: linkedInUrl } = linkedInResult;
+
+  console.log(`Stage 1B + LinkedIn completed in ${Date.now() - t_1b_start}ms`);
+
+  // Merge LinkedIn signals into fingerprint
+  const fingerprint: IdentityFingerprint = {
+    ...baseFingerprint,
+    linkedin_url: linkedInUrl || undefined,
+    linkedin_education: linkedInSignals?.education || [],
+    linkedin_past_companies: linkedInSignals?.past_companies || [],
+    linkedin_skills: linkedInSignals?.skills || [],
+    // Add past companies to company_variants for better identity matching
+    company_variants: [
+      ...(baseFingerprint.company_variants || []),
+      ...(linkedInSignals?.past_companies || []),
+    ],
+  };
+
+  console.log("Identity fingerprint:", {
+    ...fingerprint,
+    linkedin_education: fingerprint.linkedin_education?.length || 0,
+    linkedin_past_companies: fingerprint.linkedin_past_companies?.length || 0,
+  });
   console.log("Identity confidence:", confidence);
+
+  if (linkedInSignals) {
+    console.log("[LinkedIn] Enriched fingerprint with:", {
+      education: linkedInSignals.education,
+      past_companies: linkedInSignals.past_companies,
+      skills_count: linkedInSignals.skills.length,
+    });
+  }
 
   // Exit if identity confidence too low
   if (confidence < 0.4) {
