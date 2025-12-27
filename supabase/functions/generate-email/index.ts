@@ -1680,8 +1680,10 @@ function validateEmail(rawText: string, recipientFirstName: string): ValidationR
       }
       
       // Check for banned belief/value verbs - these make it sound like a mission statement
+      // Use word boundaries to avoid false positives (e.g., "care" matching "career")
       for (const verb of BANNED_LIKE_YOU_VERBS) {
-        if (lowerSentence.includes(verb)) {
+        const verbRegex = new RegExp(`\\b${verb}\\b`, 'i');
+        if (verbRegex.test(likeYouSentence)) {
           errors.push(`The "Like you," sentence contains banned verb "${verb}" - express shared lived reality, not beliefs`);
           break;
         }
