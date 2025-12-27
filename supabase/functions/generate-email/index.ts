@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ============= DEPLOY VERSION - BUMP THIS ON EACH DEPLOY =============
-const DEPLOY_VERSION = "2025-12-27c-exa-research";
+const DEPLOY_VERSION = "2025-12-27d-exa-flat-schema";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -248,103 +248,55 @@ interface EnforcementResults {
 // This schema is the HARD CONTRACT with Exa Research API.
 // All research logic is delegated to Exa via instructions.
 
+// FLATTENED SCHEMA - Max depth 5 levels to satisfy Exa API constraints
+// We flatten nested objects (scores, like_you_ingredients) to top-level properties
 const EXA_RESEARCH_OUTPUT_SCHEMA = {
   type: "object",
   properties: {
-    identity: {
-      type: "object",
-      properties: {
-        canonical_name: { type: "string" },
-        company: { type: "string" },
-        role: { type: "string" },
-        confidence: { type: "number", minimum: 0, maximum: 1 },
-        decision: { type: "string", enum: ["PASS_HIGH", "PASS_LOW", "FAIL"] },
-        disambiguators: {
-          type: "array",
-          items: { type: "string" },
-        },
-      },
-      required: ["canonical_name", "company", "confidence", "decision"],
-    },
+    identity_canonical_name: { type: "string" },
+    identity_company: { type: "string" },
+    identity_role: { type: "string" },
+    identity_confidence: { type: "number" },
+    identity_decision: { type: "string", enum: ["PASS_HIGH", "PASS_LOW", "FAIL"] },
+    identity_disambiguators: { type: "array", items: { type: "string" } },
     hook_packs: {
       type: "array",
       items: {
         type: "object",
         properties: {
-          hook_fact: {
-            type: "object",
-            properties: {
-              claim: { type: "string" },
-              source_url: { type: "string" },
-              evidence: { type: "string" },
-              evidence_type: {
-                type: "string",
-                enum: ["quote", "named_initiative", "described_decision", "named_artifact", "public_stance"],
-              },
-            },
-            required: ["claim", "source_url", "evidence", "evidence_type"],
-          },
-          bridge: {
-            type: "object",
-            properties: {
-              bridge_angle: {
-                type: "string",
-                enum: ["domain", "value", "tradeoff", "artifact", "inflection", "shared-affiliation"],
-              },
-              why_relevant: { type: "string" },
-              like_you_ingredients: {
-                type: "object",
-                properties: {
-                  shared_axis: { type: "string" },
-                  shared_action: { type: "string" },
-                  shared_stakes: { type: "string" },
-                  optional_phrases: {
-                    type: "array",
-                    items: { type: "string" },
-                  },
-                },
-                required: ["shared_axis", "shared_action", "shared_stakes"],
-              },
-              intent_theme: { type: "string" },
-            },
-            required: ["bridge_angle", "why_relevant", "like_you_ingredients", "intent_theme"],
-          },
-          scores: {
-            type: "object",
-            properties: {
-              identity_conf: { type: "number", minimum: 0, maximum: 1 },
-              non_generic: { type: "number", minimum: 0, maximum: 1 },
-              intent_fit: { type: "number", minimum: 0, maximum: 1 },
-              bridgeability: { type: "number", minimum: 0, maximum: 1 },
-              overall: { type: "number", minimum: 0, maximum: 1 },
-            },
-            required: ["identity_conf", "non_generic", "intent_fit", "bridgeability", "overall"],
-          },
+          // hook_fact fields (flattened)
+          claim: { type: "string" },
+          source_url: { type: "string" },
+          evidence: { type: "string" },
+          evidence_type: { type: "string", enum: ["quote", "named_initiative", "described_decision", "named_artifact", "public_stance"] },
+          // bridge fields (flattened)
+          bridge_angle: { type: "string", enum: ["domain", "value", "tradeoff", "artifact", "inflection", "shared-affiliation"] },
+          why_relevant: { type: "string" },
+          intent_theme: { type: "string" },
+          // like_you_ingredients (flattened)
+          shared_axis: { type: "string" },
+          shared_action: { type: "string" },
+          shared_stakes: { type: "string" },
+          // scores (flattened)
+          score_identity_conf: { type: "number" },
+          score_non_generic: { type: "number" },
+          score_intent_fit: { type: "number" },
+          score_bridgeability: { type: "number" },
+          score_overall: { type: "number" },
         },
-        required: ["hook_fact", "bridge", "scores"],
+        required: ["claim", "source_url", "evidence", "evidence_type", "bridge_angle", "why_relevant", "shared_axis", "shared_action", "shared_stakes", "score_overall"],
       },
     },
-    fallback: {
-      type: "object",
-      properties: {
-        mode: { type: "string", enum: ["sufficient", "minimal", "failed"] },
-        profile_summary: {
-          type: "object",
-          properties: {
-            current_role: { type: "string" },
-            current_company: { type: "string" },
-            education: { type: "array", items: { type: "string" } },
-            past_companies: { type: "array", items: { type: "string" } },
-            skills: { type: "array", items: { type: "string" } },
-            career_trajectory: { type: "string" },
-            likely_interests: { type: "array", items: { type: "string" } },
-          },
-          required: ["current_role", "current_company"],
-        },
-        reason: { type: "string" },
-      },
-      required: ["mode"],
-    },
+    fallback_mode: { type: "string", enum: ["sufficient", "minimal", "failed"] },
+    fallback_reason: { type: "string" },
+    // Profile summary fields (flattened)
+    profile_current_role: { type: "string" },
+    profile_current_company: { type: "string" },
+    profile_education: { type: "array", items: { type: "string" } },
+    profile_past_companies: { type: "array", items: { type: "string" } },
+    profile_skills: { type: "array", items: { type: "string" } },
+    profile_career_trajectory: { type: "string" },
+    profile_likely_interests: { type: "array", items: { type: "string" } },
     citations: {
       type: "array",
       items: {
@@ -358,8 +310,37 @@ const EXA_RESEARCH_OUTPUT_SCHEMA = {
     },
     research_notes: { type: "string" },
   },
-  required: ["identity", "hook_packs", "fallback", "citations"],
+  required: ["identity_canonical_name", "identity_company", "identity_confidence", "identity_decision", "hook_packs", "fallback_mode", "citations"],
 };
+
+// Helper to map flattened Exa output back to internal HookPack type
+function mapFlatHookPackToInternal(flat: Record<string, unknown>): HookPack {
+  return {
+    hook_fact: {
+      claim: (flat.claim as string) || "",
+      source_url: (flat.source_url as string) || "",
+      evidence: (flat.evidence as string) || "",
+      evidence_type: (flat.evidence_type as EvidenceType) || "quote",
+    },
+    bridge: {
+      bridge_angle: (flat.bridge_angle as BridgeAngle) || "domain",
+      why_relevant: (flat.why_relevant as string) || "",
+      like_you_ingredients: {
+        shared_axis: (flat.shared_axis as string) || "",
+        shared_action: (flat.shared_action as string) || "",
+        shared_stakes: (flat.shared_stakes as string) || "",
+      },
+      intent_theme: (flat.intent_theme as string) || "",
+    },
+    scores: {
+      identity_conf: (flat.score_identity_conf as number) || 0,
+      non_generic: (flat.score_non_generic as number) || 0,
+      intent_fit: (flat.score_intent_fit as number) || 0,
+      bridgeability: (flat.score_bridgeability as number) || 0,
+      overall: (flat.score_overall as number) || 0,
+    },
+  };
+}
 
 // ============= EXA RESEARCH FUNCTIONS =============
 
@@ -400,13 +381,13 @@ IDENTITY DECISION:
 - PASS_LOW (confidence 0.45-0.74): Partial match, company confirmed but limited unique signals
 - FAIL (confidence < 0.45): Cannot reliably identify person, too many confounders
 
-If FAIL: Set fallback.mode = "failed" and stop. DO NOT fabricate hooks.
+If FAIL: Set fallback_mode = "failed" and stop. DO NOT fabricate hooks.
 
 ═══════════════════════════════════════════════════════════════════
 EVIDENCE REQUIREMENTS (GATE 2 - WHAT COUNTS AS A HOOK)
 ═══════════════════════════════════════════════════════════════════
 
-A valid hook_fact MUST include at least one:
+A valid hook MUST include at least one:
 ✓ QUOTE - Exact words they said (from interview, podcast, article)
 ✓ NAMED_INITIATIVE - A specific named project/program they created or led
 ✓ DESCRIBED_DECISION - A specific choice they made with concrete context
@@ -423,14 +404,14 @@ AUTOMATICALLY REJECT:
 INTENT-FIT SCORING (CRITICAL - THIS IS THE PRIORITY)
 ═══════════════════════════════════════════════════════════════════
 
-Score each potential hook 0.0-1.0 on INTENT_FIT:
+Score each potential hook 0.0-1.0 on score_intent_fit:
 - 1.0: Directly connects to sender's purpose (perfect bridge)
 - 0.7-0.9: Related topic that sender can credibly connect to
 - 0.4-0.6: Tangentially related, requires creative bridging
 - 0.0-0.3: Irrelevant to sender's purpose (do not include)
 
-ONLY include hooks with intent_fit >= 0.5
-PRIORITIZE hooks with intent_fit >= 0.7
+ONLY include hooks with score_intent_fit >= 0.5
+PRIORITIZE hooks with score_intent_fit >= 0.7
 
 ═══════════════════════════════════════════════════════════════════
 LIKE_YOU_INGREDIENTS (NOT A SENTENCE - RAW MATERIALS)
@@ -448,33 +429,47 @@ SUFFICIENCY RULES (DETERMINES FALLBACK MODE)
 ═══════════════════════════════════════════════════════════════════
 
 Research is SUFFICIENT if:
-- 2+ hook_packs with overall >= 0.6
-- At least 1 hook with intent_fit >= 0.7
+- 2+ hook_packs with score_overall >= 0.6
+- At least 1 hook with score_intent_fit >= 0.7
 - At least 1 hook has pointable evidence (quote, named_artifact, named_initiative)
 
-If SUFFICIENT: Set fallback.mode = "sufficient"
+If SUFFICIENT: Set fallback_mode = "sufficient"
 
 If NOT SUFFICIENT but identity PASSED:
-- Set fallback.mode = "minimal"
-- Populate profile_summary with whatever you found (education, past companies, trajectory)
-- Populate likely_interests based on their role/company
-- Set fallback.reason explaining what's missing
+- Set fallback_mode = "minimal"
+- Populate profile_* fields with whatever you found (education, past companies, trajectory)
+- Populate profile_likely_interests based on their role/company
+- Set fallback_reason explaining what's missing
 
 ═══════════════════════════════════════════════════════════════════
-OUTPUT REQUIREMENTS
+OUTPUT FORMAT (FLATTENED - NO NESTED OBJECTS)
 ═══════════════════════════════════════════════════════════════════
 
-Return structured JSON matching the provided schema:
-- identity: confidence scoring and decision
-- hook_packs: 0-3 valid hooks (sorted by overall score descending)
-- fallback: mode + profile_summary if needed
-- citations: all URLs you used
-- research_notes: brief notes on what you found/didn't find
+Return structured JSON matching the provided schema. The schema is FLATTENED:
+
+Identity fields (top-level):
+- identity_canonical_name: full name
+- identity_company: company name
+- identity_role: role/title
+- identity_confidence: 0.0-1.0
+- identity_decision: "PASS_HIGH" | "PASS_LOW" | "FAIL"
+- identity_disambiguators: array of unique identifiers
+
+Each hook_pack item has FLATTENED fields (no nested objects):
+- claim, source_url, evidence, evidence_type (the hook fact)
+- bridge_angle, why_relevant, intent_theme (the bridge)
+- shared_axis, shared_action, shared_stakes (like_you ingredients)
+- score_identity_conf, score_non_generic, score_intent_fit, score_bridgeability, score_overall
+
+Fallback fields (top-level):
+- fallback_mode: "sufficient" | "minimal" | "failed"
+- fallback_reason: explanation if not sufficient
+- profile_current_role, profile_current_company, profile_education, etc.
 
 DO NOT:
 - Fabricate quotes or facts
-- Include hooks with identity_conf < 0.5
-- Include hooks with intent_fit < 0.5
+- Include hooks with score_identity_conf < 0.5
+- Include hooks with score_intent_fit < 0.5
 - Pad with generic observations
 - Return more than 3 hook_packs
 
@@ -485,27 +480,32 @@ PRIORITIZE:
 `;
 }
 
+// Raw flattened output from Exa Research API
+interface FlatExaResearchOutput {
+  identity_canonical_name: string;
+  identity_company: string;
+  identity_role?: string;
+  identity_confidence: number;
+  identity_decision: IdentityDecision;
+  identity_disambiguators?: string[];
+  hook_packs: Array<Record<string, unknown>>;
+  fallback_mode: "sufficient" | "minimal" | "failed";
+  fallback_reason?: string;
+  profile_current_role?: string;
+  profile_current_company?: string;
+  profile_education?: string[];
+  profile_past_companies?: string[];
+  profile_skills?: string[];
+  profile_career_trajectory?: string;
+  profile_likely_interests?: string[];
+  citations: { url: string; title?: string }[];
+  research_notes?: string;
+}
+
 interface ExaResearchResult {
   researchId: string;
   status: "pending" | "completed" | "failed";
-  output?: {
-    identity: {
-      canonical_name: string;
-      company: string;
-      role?: string;
-      confidence: number;
-      decision: IdentityDecision;
-      disambiguators?: string[];
-    };
-    hook_packs: HookPack[];
-    fallback: {
-      mode: "sufficient" | "minimal" | "failed";
-      profile_summary?: ProfileSummary;
-      reason?: string;
-    };
-    citations: { url: string; title?: string }[];
-    research_notes?: string;
-  };
+  output?: FlatExaResearchOutput;
   error?: string;
   latency_ms?: number;
 }
@@ -719,33 +719,42 @@ async function performV2Research(
     };
   }
 
-  // Consume the output (TRUST THE SCHEMA)
+  // Consume the output (TRUST THE SCHEMA - map flattened to internal types)
   const output = result.output;
   
-  console.log(`[exa_research] identity_decision=${output.identity.decision} confidence=${output.identity.confidence} hook_packs=${output.hook_packs.length} fallback_mode=${output.fallback.mode} generation_id=${generationId}`);
+  console.log(`[exa_research] identity_decision=${output.identity_decision} confidence=${output.identity_confidence} hook_packs=${output.hook_packs.length} fallback_mode=${output.fallback_mode} generation_id=${generationId}`);
 
-  // Build profile summary from fallback if needed
+  // Map flattened hook_packs to internal HookPack type
+  const hookPacks: HookPack[] = output.hook_packs.map(mapFlatHookPackToInternal);
+
+  // Build profile summary from flattened fields if needed
   let profileSummary: ProfileSummary | undefined;
-  if (output.fallback.mode === "minimal" && output.fallback.profile_summary) {
+  if (output.fallback_mode === "minimal" && output.profile_current_role) {
     profileSummary = {
-      ...output.fallback.profile_summary,
+      current_role: output.profile_current_role,
+      current_company: output.profile_current_company || "",
+      education: output.profile_education || [],
+      past_companies: output.profile_past_companies || [],
+      skills: output.profile_skills || [],
+      career_trajectory: output.profile_career_trajectory,
+      likely_interests: output.profile_likely_interests || [],
       source: "exa_research",
     };
   }
 
-  const isMinimalResearch = output.hook_packs.length === 0 || output.fallback.mode !== "sufficient";
+  const isMinimalResearch = hookPacks.length === 0 || output.fallback_mode !== "sufficient";
 
   return {
-    hookPacks: output.hook_packs,
+    hookPacks,
     senderIntentProfile: intentProfile,
     profileSummary,
     minimalResearch: isMinimalResearch,
     exaResearchId: researchId,
     exaResearchLatencyMs: result.latency_ms,
     citations: output.citations,
-    identityDecision: output.identity.decision,
-    identityConfidence: output.identity.confidence,
-    notes: output.research_notes || output.fallback.reason,
+    identityDecision: output.identity_decision,
+    identityConfidence: output.identity_confidence,
+    notes: output.research_notes || output.fallback_reason,
   };
 }
 
