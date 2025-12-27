@@ -1,15 +1,32 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// ============= DEPLOY VERSION - BUMP THIS ON EACH DEPLOY =============
+const DEPLOY_VERSION = "2025-12-27b";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Expose-Headers": "x-deploy-version, x-generation-id",
 };
 
 const PROMPT_VERSION = "v9.0-voice-first";
 const MODEL_NAME = "google/gemini-2.5-flash";
 const RESEARCH_MODEL_NAME = "google/gemini-2.5-flash";
 
+// ============= LINKEDIN ENRICHMENT CONFIG =============
+const LINKEDIN_ENRICHMENT_ENABLED = Deno.env.get("LINKEDIN_ENRICHMENT_ENABLED") !== "false"; // defaults to true
+const LINKEDIN_IDENTITY_THRESHOLD = parseFloat(Deno.env.get("LINKEDIN_IDENTITY_THRESHOLD") || "0.7");
+
+// Helper to build response headers with deploy version and generation ID
+function buildResponseHeaders(generationId: string): Record<string, string> {
+  return {
+    ...corsHeaders,
+    "Content-Type": "application/json",
+    "x-deploy-version": DEPLOY_VERSION,
+    "x-generation-id": generationId,
+  };
+}
 // ============= SUPER PROMPT (Voice-First v9) =============
 const SUPER_PROMPT = `
 
@@ -1645,10 +1662,10 @@ async function findLinkedInProfile(
   name: string,
   company: string,
   exaApiKey: string,
+  generationId: string,
 ): Promise<string | null> {
-  console.log(`[LinkedIn] Searching for LinkedIn profile: ${name} at ${company}`);
-  
   const query = `site:linkedin.com/in "${name}" "${company}"`;
+  console.log(`[LinkedIn] exa_query="${query}" generation_id=${generationId}`);
   
   try {
     const response = await fetch("https://api.exa.ai/search", {
@@ -1666,39 +1683,43 @@ async function findLinkedInProfile(
     });
 
     if (!response.ok) {
-      console.log("[LinkedIn] Exa search failed:", response.status);
+      const errorBody = await response.text();
+      console.error(`[LinkedIn] Exa search failed: status=${response.status} body=${errorBody} generation_id=${generationId}`);
       return null;
     }
 
     const data = await response.json();
     const results = data.results || [];
     
+    // Log all returned URLs for debugging
+    console.log(`[LinkedIn] Exa returned ${results.length} results: ${JSON.stringify(results.map((r: any) => r.url))} generation_id=${generationId}`);
+    
     // Find LinkedIn profile URL
     for (const result of results) {
       const url = result.url?.toLowerCase() || "";
       if (url.includes("linkedin.com/in/")) {
-        console.log(`[LinkedIn] Found profile: ${result.url}`);
+        console.log(`[LinkedIn] Found profile: ${result.url} generation_id=${generationId}`);
         return result.url;
       }
     }
     
-    console.log("[LinkedIn] No LinkedIn profile found in results");
+    console.log(`[LinkedIn] No LinkedIn profile URL matched linkedin.com/in/ pattern generation_id=${generationId}`);
     return null;
   } catch (e) {
-    console.error("[LinkedIn] Search error:", e);
+    console.error(`[LinkedIn] Search error: ${e} generation_id=${generationId}`);
     return null;
   }
 }
 
-async function scrapeLinkedInProfile(linkedInUrl: string): Promise<string | null> {
+async function scrapeLinkedInProfile(linkedInUrl: string, generationId: string): Promise<string | null> {
   const firecrawlApiKey = Deno.env.get("FIRECRAWL_API_KEY");
   
   if (!firecrawlApiKey) {
-    console.log("[LinkedIn] FIRECRAWL_API_KEY not configured, skipping scrape");
+    console.log(`[LinkedIn] FIRECRAWL_API_KEY not configured, skipping scrape generation_id=${generationId}`);
     return null;
   }
   
-  console.log(`[LinkedIn] Scraping profile: ${linkedInUrl}`);
+  console.log(`[LinkedIn] Scraping profile: ${linkedInUrl} generation_id=${generationId}`);
   
   try {
     const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
@@ -1717,7 +1738,7 @@ async function scrapeLinkedInProfile(linkedInUrl: string): Promise<string | null
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("[LinkedIn] Firecrawl error:", response.status, errorText);
+      console.error(`[LinkedIn] Firecrawl error: status=${response.status} body=${errorText} generation_id=${generationId}`);
       return null;
     }
 
@@ -1725,13 +1746,19 @@ async function scrapeLinkedInProfile(linkedInUrl: string): Promise<string | null
     const markdown = data.data?.markdown || data.markdown;
     
     if (markdown) {
-      console.log(`[LinkedIn] Got ${markdown.length} chars of profile content`);
+      // Check if it looks like a login wall
+      const looksLikeLoginWall = markdown.length < 500 || markdown.toLowerCase().includes("sign in") && markdown.toLowerCase().includes("join now");
+      console.log(`[LinkedIn] Got ${markdown.length} chars of profile content, login_wall_suspected=${looksLikeLoginWall} generation_id=${generationId}`);
+      if (looksLikeLoginWall) {
+        console.log(`[LinkedIn] Content snippet: ${markdown.substring(0, 300)} generation_id=${generationId}`);
+      }
       return markdown;
     }
     
+    console.log(`[LinkedIn] No markdown content returned generation_id=${generationId}`);
     return null;
   } catch (e) {
-    console.error("[LinkedIn] Scrape error:", e);
+    console.error(`[LinkedIn] Scrape error: ${e} generation_id=${generationId}`);
     return null;
   }
 }
@@ -1805,22 +1832,23 @@ async function enrichFingerprintFromLinkedIn(
   recipientCompany: string,
   exaApiKey: string,
   LOVABLE_API_KEY: string,
+  generationId: string,
 ): Promise<{ signals: LinkedInSignals | null; profileUrl: string | null }> {
-  console.log("=== LinkedIn Enrichment for Disambiguators ===");
+  console.log(`=== LinkedIn Enrichment for Disambiguators === generation_id=${generationId}`);
   
   // Step 1: Find LinkedIn profile URL
-  const profileUrl = await findLinkedInProfile(recipientName, recipientCompany, exaApiKey);
+  const profileUrl = await findLinkedInProfile(recipientName, recipientCompany, exaApiKey, generationId);
   
   if (!profileUrl) {
-    console.log("[LinkedIn] No profile found, skipping enrichment");
+    console.log(`[LinkedIn] No profile found, skipping enrichment generation_id=${generationId}`);
     return { signals: null, profileUrl: null };
   }
   
   // Step 2: Scrape the profile with Firecrawl
-  const profileMarkdown = await scrapeLinkedInProfile(profileUrl);
+  const profileMarkdown = await scrapeLinkedInProfile(profileUrl, generationId);
   
   if (!profileMarkdown) {
-    console.log("[LinkedIn] Failed to scrape profile, skipping enrichment");
+    console.log(`[LinkedIn] Failed to scrape profile, skipping enrichment generation_id=${generationId}`);
     return { signals: null, profileUrl };
   }
   
@@ -1829,6 +1857,7 @@ async function enrichFingerprintFromLinkedIn(
   
   if (signals) {
     signals.profile_url = profileUrl;
+    console.log(`[LinkedIn] Successfully extracted signals generation_id=${generationId}`);
   }
   
   return { signals, profileUrl };
@@ -2649,8 +2678,9 @@ async function performV2Research(
   askType: AskType,
   exaApiKey: string,
   LOVABLE_API_KEY: string,
+  generationId: string,
 ): Promise<V2ResearchResult> {
-  console.log("=== V2 Intent-Driven Research Pipeline ===");
+  console.log(`=== V2 Intent-Driven Research Pipeline === generation_id=${generationId}`);
 
   const queriesUsed: string[] = [];
   let allExaResults: ExaResult[] = [];
@@ -2698,25 +2728,65 @@ async function performV2Research(
     must_include_terms: intentProfile.must_include_terms.slice(0, 5),
   });
 
-  // ============= STAGE 1B + LINKEDIN: Extract fingerprint + LinkedIn enrichment in parallel =============
-  console.log("=== Stage 1B + LinkedIn: Running in parallel ===");
+  // ============= STAGE 1B: Extract fingerprint first =============
+  console.log(`=== Stage 1B: Extract Identity Fingerprint === generation_id=${generationId}`);
   const t_1b_start = Date.now();
 
-  const [fingerprintResult, linkedInResult] = await Promise.all([
-    extractIdentityFingerprint(
-      recipientName,
-      recipientCompany,
-      recipientRole,
-      identityResults,
-      LOVABLE_API_KEY,
-    ),
-    enrichFingerprintFromLinkedIn(recipientName, recipientCompany, exaApiKey, LOVABLE_API_KEY),
-  ]);
+  const fingerprintResult = await extractIdentityFingerprint(
+    recipientName,
+    recipientCompany,
+    recipientRole,
+    identityResults,
+    LOVABLE_API_KEY,
+  );
 
   const { fingerprint: baseFingerprint, confidence } = fingerprintResult;
-  const { signals: linkedInSignals, profileUrl: linkedInUrl } = linkedInResult;
+  console.log(`Stage 1B fingerprint extraction completed in ${Date.now() - t_1b_start}ms, confidence=${confidence} generation_id=${generationId}`);
 
-  console.log(`Stage 1B + LinkedIn completed in ${Date.now() - t_1b_start}ms`);
+  // ============= LINKEDIN ENRICHMENT GATING =============
+  // Log gating decision before attempting LinkedIn enrichment
+  const disambiguatorsForGating = buildDisambiguators(baseFingerprint);
+  const linkedInGatingDecision = {
+    enabled: LINKEDIN_ENRICHMENT_ENABLED,
+    identity_confidence: confidence,
+    threshold: LINKEDIN_IDENTITY_THRESHOLD,
+    attempt: LINKEDIN_ENRICHMENT_ENABLED && confidence < LINKEDIN_IDENTITY_THRESHOLD,
+    reason: !LINKEDIN_ENRICHMENT_ENABLED 
+      ? "disabled_env" 
+      : confidence >= LINKEDIN_IDENTITY_THRESHOLD 
+        ? "identity_confidence_ok" 
+        : "below_threshold_attempting",
+    disambiguators_present: {
+      tier1_count: disambiguatorsForGating.tier1.length,
+      tier2_count: disambiguatorsForGating.tier2.length,
+      any: disambiguatorsForGating.tier1.length > 0 || disambiguatorsForGating.tier2.length > 0,
+    },
+  };
+  
+  console.log(`linkedin_enrich: ${JSON.stringify(linkedInGatingDecision)} generation_id=${generationId}`);
+
+  // Attempt LinkedIn enrichment based on gating decision
+  let linkedInSignals: LinkedInSignals | null = null;
+  let linkedInUrl: string | null = null;
+
+  if (linkedInGatingDecision.attempt) {
+    try {
+      const t_linkedin_start = Date.now();
+      const linkedInResult = await enrichFingerprintFromLinkedIn(
+        recipientName, 
+        recipientCompany, 
+        exaApiKey, 
+        LOVABLE_API_KEY,
+        generationId,
+      );
+      linkedInSignals = linkedInResult.signals;
+      linkedInUrl = linkedInResult.profileUrl;
+      console.log(`[LinkedIn] Enrichment completed in ${Date.now() - t_linkedin_start}ms generation_id=${generationId}`);
+    } catch (e) {
+      console.error(`[LinkedIn] enrichment_error: ${e} generation_id=${generationId}`);
+      // Continue pipeline without LinkedIn signals
+    }
+  }
 
   // Merge LinkedIn signals into fingerprint
   const fingerprint: IdentityFingerprint = {
@@ -2732,19 +2802,11 @@ async function performV2Research(
     ],
   };
 
-  console.log("Identity fingerprint:", {
-    ...fingerprint,
-    linkedin_education: fingerprint.linkedin_education?.length || 0,
-    linkedin_past_companies: fingerprint.linkedin_past_companies?.length || 0,
-  });
-  console.log("Identity confidence:", confidence);
+  console.log(`Identity fingerprint merged: linkedin_education=${fingerprint.linkedin_education?.length || 0} linkedin_past_companies=${fingerprint.linkedin_past_companies?.length || 0} generation_id=${generationId}`);
+  console.log(`Identity confidence: ${confidence} generation_id=${generationId}`);
 
   if (linkedInSignals) {
-    console.log("[LinkedIn] Enriched fingerprint with:", {
-      education: linkedInSignals.education,
-      past_companies: linkedInSignals.past_companies,
-      skills_count: linkedInSignals.skills.length,
-    });
+    console.log(`[LinkedIn] Enriched fingerprint with: education=${linkedInSignals.education.length} past_companies=${linkedInSignals.past_companies.length} skills=${linkedInSignals.skills.length} generation_id=${generationId}`);
   }
 
   // Exit if identity confidence too low
@@ -2986,6 +3048,9 @@ async function performV2Research(
 // ============= MAIN HANDLER =============
 
 serve(async (req) => {
+  // Generate unique ID for this request - used for log correlation
+  const generationId = crypto.randomUUID();
+  
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
@@ -3007,40 +3072,46 @@ serve(async (req) => {
     const scenarioName = body.scenario_name || body.scenarioName || null;
     const sessionId = body.sessionId || null;
     const includeDebug = body.includeDebug || source === "test_harness";
+    
+    // BOOT log - first log line for every request
+    console.log(`BOOT generate-email deploy_version=${DEPLOY_VERSION} generation_id=${generationId} session_id=${sessionId}`);
+    
+    // Build response headers helper for this request
+    const responseHeaders = buildResponseHeaders(generationId);
 
     // Input validation
     if (!recipientName || recipientName.length < 2 || recipientName.length > 100) {
       return new Response(JSON.stringify({ error: "Invalid recipient name" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
     if (!recipientCompany || recipientCompany.length < 1 || recipientCompany.length > 100) {
       return new Response(JSON.stringify({ error: "Invalid company name" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
     if (!recipientRole || recipientRole.length < 1 || recipientRole.length > 100) {
       return new Response(JSON.stringify({ error: "Invalid role/title" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
     if (!credibilityStory || credibilityStory.length < 10 || credibilityStory.length > 1000) {
       return new Response(JSON.stringify({ error: "Credibility story must be between 10 and 1000 characters" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
     if (!reachingOutBecause || reachingOutBecause.length < 5 || reachingOutBecause.length > 500) {
       return new Response(JSON.stringify({ error: "Please explain why you are reaching out (5-500 characters)" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
@@ -3063,7 +3134,7 @@ serve(async (req) => {
       console.error("LOVABLE_API_KEY is not configured");
       return new Response(JSON.stringify({ error: "Failed to generate email. Please try again." }), {
         status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
@@ -3083,6 +3154,7 @@ serve(async (req) => {
           askType,
           EXA_API_KEY,
           LOVABLE_API_KEY,
+          generationId,
         );
 
         console.log(`V2 Research complete: ${researchResult.hookPacks.length} Hook Packs extracted`);
@@ -3236,20 +3308,20 @@ Return JSON only:
       if (error.status === 429) {
         return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again in a moment." }), {
           status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          headers: responseHeaders,
         });
       }
       if (error.status === 402) {
         return new Response(JSON.stringify({ error: "AI credits exhausted. Please add credits to continue." }), {
           status: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          headers: responseHeaders,
         });
       }
 
       console.error("Generation error:", error);
       return new Response(JSON.stringify({ error: "Failed to generate email. Please try again." }), {
         status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
@@ -3262,7 +3334,7 @@ Return JSON only:
       console.error("Failed to parse final response as JSON");
       return new Response(JSON.stringify({ error: "Failed to generate valid email. Please try again." }), {
         status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: responseHeaders,
       });
     }
 
@@ -3271,8 +3343,8 @@ Return JSON only:
     const clicheCount = countCliches(emailData.subject + " " + emailData.body);
     const likeYouCount = countLikeYouCapitalized(emailData.body);
 
-    // Log analytics
-    console.log("=== GENERATION ANALYTICS ===");
+    // Log analytics with generation_id
+    console.log(`=== GENERATION ANALYTICS === generation_id=${generationId}`);
     console.log(`hook_packs: ${researchResult?.hookPacks.length || 0}`);
     console.log(`intent_profile: ${researchResult?.senderIntentProfile?.primary_theme || "none"}`);
     console.log(`exa_queries: ${researchResult?.queriesUsed.length || 0}`);
@@ -3282,7 +3354,8 @@ Return JSON only:
     console.log(`word_count: ${wordCount}`);
     console.log(`validator_passed: ${validation.valid}`);
     console.log(`latency_ms: ${latencyMs}`);
-    console.log("============================");
+    console.log(`deploy_version: ${DEPLOY_VERSION}`);
+    console.log(`============================`);
 
     // Log to email_generations table
     try {
@@ -3373,7 +3446,7 @@ Return JSON only:
 
     return new Response(JSON.stringify(responsePayload), {
       status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      headers: responseHeaders,
     });
   } catch (error) {
     console.error("Unhandled error:", error);
