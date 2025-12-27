@@ -2483,6 +2483,147 @@ function getAffiliationTypeLabel(type: string): string {
   return labels[type] || type;
 }
 
+// ============= PROFILE SUMMARY FALLBACK =============
+
+// ProfileSummary aggregates available info when no Hook Packs are found
+interface ProfileSummary {
+  current_role: string;
+  current_company: string;
+  education: string[]; // from LinkedIn
+  past_companies: string[]; // from LinkedIn
+  skills: string[]; // from LinkedIn
+  career_trajectory?: string; // synthesized summary
+  company_context?: string; // what the company does
+  likely_interests: string[]; // from bridge hypotheses
+  source: "linkedin" | "fingerprint" | "hypothesis" | "mixed";
+}
+
+function buildProfileSummary(
+  recipientRole: string,
+  recipientCompany: string,
+  fingerprint: IdentityFingerprint | null,
+  hypotheses: BridgeHypothesis[],
+  candidateUrls: CandidateUrl[],
+): ProfileSummary {
+  console.log("=== Building Profile Summary Fallback ===");
+
+  const summary: ProfileSummary = {
+    current_role: recipientRole,
+    current_company: recipientCompany,
+    education: [],
+    past_companies: [],
+    skills: [],
+    likely_interests: [],
+    source: "fingerprint",
+  };
+
+  // Extract LinkedIn-derived signals from fingerprint
+  if (fingerprint) {
+    summary.education = fingerprint.linkedin_education || [];
+    summary.past_companies = fingerprint.linkedin_past_companies || [];
+    summary.skills = fingerprint.linkedin_skills || [];
+
+    if (summary.education.length > 0 || summary.past_companies.length > 0) {
+      summary.source = "linkedin";
+    }
+
+    // Build career trajectory if we have past companies
+    if (summary.past_companies.length > 0) {
+      const trajectory = summary.past_companies.slice(0, 3).join(" → ");
+      summary.career_trajectory = `${trajectory} → ${recipientCompany}`;
+    }
+  }
+
+  // Extract likely interests from bridge hypotheses
+  if (hypotheses.length > 0) {
+    summary.likely_interests = hypotheses
+      .map((h) => h.theme)
+      .filter((t) => t && t.length > 0);
+    
+    if (summary.source === "fingerprint" && summary.likely_interests.length > 0) {
+      summary.source = "hypothesis";
+    } else if (summary.source === "linkedin" && summary.likely_interests.length > 0) {
+      summary.source = "mixed";
+    }
+  }
+
+  // Extract company context from PASS_LOW candidates (if any mention the company)
+  const passLowCandidates = candidateUrls.filter(
+    (c) => c.passed_niche_gate && c.identity_decision === "PASS_LOW"
+  );
+  
+  if (passLowCandidates.length > 0) {
+    // Look for company description in candidate text
+    const companyMentions = passLowCandidates
+      .map((c) => c.text.substring(0, 500))
+      .join(" ")
+      .toLowerCase();
+    
+    // Simple extraction - could be enhanced with LLM
+    if (companyMentions.includes(recipientCompany.toLowerCase())) {
+      summary.company_context = `Works at ${recipientCompany}`;
+    }
+  }
+
+  console.log("Profile Summary built:", {
+    source: summary.source,
+    education: summary.education.length,
+    past_companies: summary.past_companies.length,
+    skills: summary.skills.length,
+    likely_interests: summary.likely_interests.length,
+    has_trajectory: !!summary.career_trajectory,
+  });
+
+  return summary;
+}
+
+function buildProfileSummaryPromptSection(summary: ProfileSummary): string {
+  const sections: string[] = [];
+
+  sections.push(`RECIPIENT PROFILE (limited research - be honest about what you know):`);
+  sections.push(`- Current: ${summary.current_role} at ${summary.current_company}`);
+
+  if (summary.career_trajectory) {
+    sections.push(`- Career path: ${summary.career_trajectory}`);
+  }
+
+  if (summary.education.length > 0) {
+    sections.push(`- Education: ${summary.education.slice(0, 3).join(", ")}`);
+  }
+
+  if (summary.past_companies.length > 0 && !summary.career_trajectory) {
+    sections.push(`- Previously at: ${summary.past_companies.slice(0, 3).join(", ")}`);
+  }
+
+  if (summary.skills.length > 0) {
+    sections.push(`- Skills/expertise: ${summary.skills.slice(0, 5).join(", ")}`);
+  }
+
+  if (summary.likely_interests.length > 0) {
+    sections.push(`- Likely cares about: ${summary.likely_interests.slice(0, 3).join(", ")}`);
+  }
+
+  sections.push(`
+IMPORTANT - MINIMAL RESEARCH MODE:
+We could not find specific interviews, podcasts, or quotes from this person.
+DO NOT fabricate specific facts, quotes, or initiatives.
+
+For your "Like you," line, use ONE of these approaches:
+1. SHARED TRAJECTORY: If you share a similar career path (same past company, school, or industry transition)
+   Example: "Like you, I made the jump from consulting to tech and never looked back."
+
+2. SHARED DOMAIN: If you work in the same space/industry
+   Example: "Like you, I spend my days thinking about how fintech can actually reach the unbanked."
+
+3. SHARED CHALLENGE: Reference a challenge common to their role
+   Example: "Like you, I've learned that scaling a product team is harder than scaling the product."
+
+DO NOT USE generic phrases like "Like you, I'm passionate about..." or "Like you, I believe in..."
+The "Like you," must reference something CONCRETE about your shared experience.`);
+
+  return sections.join("\n");
+}
+
 // ============= V2 RESEARCH PIPELINE (INTENT-DRIVEN) =============
 
 interface V2ResearchResult {
@@ -2494,6 +2635,8 @@ interface V2ResearchResult {
   queriesUsed: string[];
   exaResults: ExaResult[];
   selectedSources: string[];
+  profileSummary?: ProfileSummary; // NEW: fallback when no Hook Packs
+  minimalResearch: boolean; // NEW: flag for email generation
   notes?: string;
 }
 
@@ -2616,6 +2759,7 @@ async function performV2Research(
       queriesUsed,
       exaResults: allExaResults,
       selectedSources: [],
+      minimalResearch: true,
       notes: "Research stopped: could not confidently identify recipient. Name may be ambiguous.",
     };
   }
@@ -2810,6 +2954,21 @@ async function performV2Research(
     console.log("Skipping Firecrawl: research is already sufficient");
   }
 
+  // Build profile summary if no Hook Packs found (fallback for personalization)
+  const isMinimalResearch = hookPacks.length === 0;
+  let profileSummary: ProfileSummary | undefined;
+
+  if (isMinimalResearch) {
+    profileSummary = buildProfileSummary(
+      recipientRole,
+      recipientCompany,
+      fingerprint,
+      hypotheses,
+      candidateUrls,
+    );
+    console.log("Built Profile Summary fallback for minimal research case");
+  }
+
   return {
     hookPacks,
     senderIntentProfile: intentProfile,
@@ -2819,6 +2978,8 @@ async function performV2Research(
     queriesUsed,
     exaResults: allExaResults.slice(0, 10),
     selectedSources: eligibleCandidates.map((c) => c.url),
+    profileSummary,
+    minimalResearch: isMinimalResearch,
   };
 }
 
@@ -2992,13 +3153,19 @@ INSTRUCTIONS:
 - Rewrite the draft "Like you," line to sound natural—like you'd text it
 - Reference the specific fact somewhere in the email (show you did homework)
 - Don't use all ingredients if it sounds forced. Less is more.`;
+    } else if (researchResult?.profileSummary) {
+      // Use Profile Summary fallback when no Hook Packs but we have LinkedIn/fingerprint data
+      hookPacksSection = buildProfileSummaryPromptSection(researchResult.profileSummary);
     } else {
       hookPacksSection = `
 NO RESEARCH AVAILABLE.
 Create the "Like you," bridge from:
 - The sender's own story (below)
 - What someone in ${recipientRole} at ${recipientCompany} likely cares about
-Keep it real—don't pretend you found something you didn't.`;
+Keep it real—don't pretend you found something you didn't.
+
+IMPORTANT: DO NOT fabricate specific quotes, initiatives, or facts about the recipient.
+Use a trajectory-based or domain-based "Like you," line based on the sender's experience.`;
     }
 
     const userPrompt = `Write a cold email. Sound human.
