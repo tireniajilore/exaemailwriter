@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ResearchEmailForm } from '@/components/ResearchEmailForm';
 import { EmailResult } from '@/components/EmailResult';
-import { apiRequest } from '@/lib/api';
+import { supabase } from '@/integrations/supabase/client';
 import type { EmailRequest, EmailResponse } from '@/lib/prompt';
 import { toast } from 'sonner';
 
@@ -14,29 +14,26 @@ const Index = () => {
     setResult(null);
 
     try {
-      const { data, error } = await apiRequest<{ subject: string; body: string; error?: string }>(
-        '/api/generate-email',
-        request
-      );
+      const { data, error } = await supabase.functions.invoke('generate-email', {
+        body: request,
+      });
 
       if (error) {
-        console.error('API error:', error);
+        console.error('Edge function error:', error);
         toast.error('Failed to generate email. Please try again.');
         return;
       }
 
-      if (data?.error) {
+      if (data.error) {
         console.error('API error:', data.error);
         toast.error(data.error);
         return;
       }
 
-      if (data) {
-        setResult({
-          subject: data.subject,
-          body: data.body,
-        });
-      }
+      setResult({
+        subject: data.subject,
+        body: data.body,
+      });
     } catch (err) {
       console.error('Error generating email:', err);
       toast.error('Something went wrong. Please try again.');

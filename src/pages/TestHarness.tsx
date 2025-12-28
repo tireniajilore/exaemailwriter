@@ -8,7 +8,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { apiRequest } from '@/lib/api';
+import { supabase } from '@/integrations/supabase/client';
 import { TEST_CASES, TestCase } from '@/testCases';
 import type { ResearchedEmailResponse, HookFact } from '@/lib/prompt';
 
@@ -82,26 +82,28 @@ export default function TestHarness() {
       setProgress(i + 1);
 
       try {
-        const { data, error } = await apiRequest<ResearchedEmailResponse>('/api/generate-email', {
-          recipientName: testCase.recipientName,
-          recipientRole: testCase.recipientRole,
-          recipientCompany: testCase.recipientCompany,
-          askType: testCase.askType,
-          reachingOutBecause: testCase.reachingOutBecause,
-          credibilityStory: testCase.credibilityStory,
-          sharedAffiliation: testCase.sharedAffiliation,
-          source: 'test-harness',
-          scenarioName: testCase.label,
+        const { data, error } = await supabase.functions.invoke('generate-email', {
+          body: {
+            recipientName: testCase.recipientName,
+            recipientRole: testCase.recipientRole,
+            recipientCompany: testCase.recipientCompany,
+            askType: testCase.askType,
+            reachingOutBecause: testCase.reachingOutBecause,
+            credibilityStory: testCase.credibilityStory,
+            sharedAffiliation: testCase.sharedAffiliation,
+            source: 'test-harness',
+            scenarioName: testCase.label,
+          },
         });
 
         if (error) {
           newResults.push({
             testCase,
             response: null,
-            error: error,
+            error: error.message,
             metrics: null,
           });
-        } else if (data) {
+        } else {
           const metrics = analyzeEmail(data.body || '');
           newResults.push({
             testCase,
