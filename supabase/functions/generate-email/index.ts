@@ -14,7 +14,7 @@ const PROMPT_VERSION = "v9.0-voice-first";
 const MODEL_NAME = "gemini-1.5-flash"; // Stable, fast, production-ready
 
 // Exa Research config
-const EXA_RESEARCH_TIMEOUT_MS = 30000; // 30 seconds max budget
+const EXA_RESEARCH_TIMEOUT_MS = 60000; // 60 seconds - Exa needs time for quality research
 const EXA_RESEARCH_POLL_INTERVAL_MS = 2000; // 2 seconds (faster polling for early stop)
 
 // Helper to build response headers with deploy version and generation ID
