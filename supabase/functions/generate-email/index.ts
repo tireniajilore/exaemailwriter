@@ -645,7 +645,7 @@ async function performV2Research(
   credibilityStory: string,
   askType: AskType,
   exaApiKey: string,
-  LOVABLE_API_KEY: string,
+  GEMINI_API_KEY: string,
   generationId: string,
 ): Promise<V2ResearchResult> {
   console.log(`=== V2 Research (Exa Research API) === generation_id=${generationId}`);
@@ -655,7 +655,7 @@ async function performV2Research(
     reachingOutBecause,
     credibilityStory,
     askType,
-    LOVABLE_API_KEY,
+    GEMINI_API_KEY,
   );
 
   console.log("Sender Intent Profile:", {
@@ -777,7 +777,7 @@ async function extractSenderIntentProfile(
   reachingOutBecause: string,
   credibilityStory: string,
   askType: AskType,
-  LOVABLE_API_KEY: string,
+  GEMINI_API_KEY: string,
 ): Promise<SenderIntentProfile> {
   console.log("=== Stage 0: Extract Sender Intent Profile ===");
 
@@ -802,7 +802,7 @@ OUTPUT JSON ONLY:
 
   try {
     const response = await callLLM(
-      LOVABLE_API_KEY,
+      GEMINI_API_KEY,
       "You extract sender intent profiles to guide cold email research. Be specific about themes and terms.",
       prompt,
     );
@@ -854,34 +854,40 @@ function extractSimpleKeywords(text: string): string[] {
 // ============= HELPER FUNCTIONS =============
 
 async function callLLM(
-  LOVABLE_API_KEY: string,
+  GEMINI_API_KEY: string,
   systemPrompt: string,
   userPrompt: string,
   modelName: string = MODEL_NAME,
 ): Promise<string> {
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  // Direct Google Gemini API call
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${LOVABLE_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: modelName,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
+      contents: [{
+        parts: [{
+          text: `${systemPrompt}\n\n${userPrompt}`
+        }]
+      }],
+      generationConfig: {
+        temperature: 0.7,
+        topK: 40,
+        topP: 0.95,
+        maxOutputTokens: 8192,
+      }
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error("Lovable AI error:", response.status, errorText);
+    console.error("Gemini API error:", response.status, errorText);
     throw { status: response.status, message: errorText };
   }
 
   const data = await response.json();
-  return data.choices[0].message.content;
+  return data.candidates[0].content.parts[0].text;
 }
 
 // ============= VALIDATION CONSTANTS =============
@@ -1328,11 +1334,11 @@ serve(async (req) => {
       sharedAffiliation,
     };
 
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
     const EXA_API_KEY = Deno.env.get("EXA_API_KEY");
 
-    if (!LOVABLE_API_KEY) {
-      console.error("LOVABLE_API_KEY is not configured");
+    if (!GEMINI_API_KEY) {
+      console.error("GEMINI_API_KEY is not configured");
       return new Response(JSON.stringify({ error: "Failed to generate email. Please try again." }), {
         status: 500,
         headers: responseHeaders,
@@ -1360,7 +1366,7 @@ serve(async (req) => {
           credibilityStory,
           askType,
           EXA_API_KEY,
-          LOVABLE_API_KEY,
+          GEMINI_API_KEY,
           generationId,
         );
 
@@ -1496,7 +1502,7 @@ Return JSON only:
         },
       });
 
-      rawResponse = await callLLM(LOVABLE_API_KEY, SUPER_PROMPT, userPrompt);
+      rawResponse = await callLLM(GEMINI_API_KEY, SUPER_PROMPT, userPrompt);
       console.log("AI response:", rawResponse);
 
       validation = validateEmail(rawResponse, recipientFirstName);
@@ -1509,7 +1515,7 @@ Return JSON only:
         const retryPrompt = userPrompt + buildRetryInstruction(validation.errors, recipientFirstName);
 
         console.log("Generating email (attempt 2 - retry)...");
-        rawResponse = await callLLM(LOVABLE_API_KEY, SUPER_PROMPT, retryPrompt);
+        rawResponse = await callLLM(GEMINI_API_KEY, SUPER_PROMPT, retryPrompt);
         console.log("AI response (retry):", rawResponse);
 
         validation = validateEmail(rawResponse, recipientFirstName);
