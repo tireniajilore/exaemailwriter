@@ -7,7 +7,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useProlific } from '@/contexts/ProlificContext';
-import { supabase } from '@/integrations/supabase/client';
+import { apiRequest } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import {
   Dialog,
@@ -157,20 +157,18 @@ export default function ProlificSurvey() {
         ? [...likelihoodReasons, ...(likelihoodOther.trim() ? [`other: ${likelihoodOther.trim()}`] : [])]
         : null;
 
-      const { error } = await supabase.functions.invoke('submit-prolific-survey', {
-        body: {
-          sessionId,
-          comparisonRating: parseInt(comparisonRating, 10),
-          likelihoodChange,
-          likelihoodReasons: finalLikelihoodReasons,
-          changesBeforeSending,
-          whatFeltOff: whatFeltOff.trim() || null,
-          mostUsefulPart,
-          whatsMissing: whatsMissing.trim() || null,
-        },
+      const { error } = await apiRequest('/api/prolific/survey', {
+        sessionId,
+        comparisonRating: parseInt(comparisonRating, 10),
+        likelihoodChange,
+        likelihoodReasons: finalLikelihoodReasons,
+        changesBeforeSending,
+        whatFeltOff: whatFeltOff.trim() || null,
+        mostUsefulPart,
+        whatsMissing: whatsMissing.trim() || null,
       });
 
-      if (error) throw error;
+      if (error) throw new Error(error);
 
       localStorage.removeItem(SESSION_STORAGE_KEY);
       setGeneratedEmail(null);

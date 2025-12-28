@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { useProlific } from '@/contexts/ProlificContext';
 import { ResearchEmailForm } from '@/components/ResearchEmailForm';
 import { EmailResult } from '@/components/EmailResult';
-import { supabase } from '@/integrations/supabase/client';
+import { apiRequest } from '@/lib/api';
 import type { EmailRequest } from '@/lib/prompt';
 import { useToast } from '@/hooks/use-toast';
 
@@ -44,22 +44,22 @@ export default function ProlificApp() {
 
     setIsLoading(true);
     try {
-      const { data: responseData, error } = await supabase.functions.invoke('log-email-generation', {
-        body: {
-          sessionId,
-          ...request,
-        },
+      const { data: responseData, error } = await apiRequest<{ subject: string; body: string }>('/api/generate-email', {
+        sessionId,
+        ...request,
       });
 
-      if (error) throw error;
+      if (error) throw new Error(error);
 
-      const email = {
-        subject: responseData.subject,
-        body: responseData.body,
-      };
-      
-      setLocalEmail(email);
-      setGeneratedEmail(email);
+      if (responseData) {
+        const email = {
+          subject: responseData.subject,
+          body: responseData.body,
+        };
+        
+        setLocalEmail(email);
+        setGeneratedEmail(email);
+      }
     } catch (error) {
       console.error('Error generating email:', error);
       toast({

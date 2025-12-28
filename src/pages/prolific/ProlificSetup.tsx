@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useProlific } from '@/contexts/ProlificContext';
-import { supabase } from '@/integrations/supabase/client';
+import { apiRequest } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 
 const FREQUENCY_OPTIONS = [
@@ -40,23 +40,20 @@ export default function ProlificSetup() {
 
     setIsSubmitting(true);
     try {
-      const { data: responseData, error } = await supabase.functions.invoke('create-prolific-session', {
-        body: {
-          prolificId: data.prolificId,
-          studyId: data.studyId,
-          prolificSessionId: data.sessionId,
-          profession: data.profession,
-          coldEmailFrequency: data.coldEmailFrequency,
-        },
+      const { data: responseData, error } = await apiRequest<{ sessionId: string }>('/api/prolific/session', {
+        prolificId: data.prolificId,
+        studyId: data.studyId,
+        prolificSessionId: data.sessionId,
+        profession: data.profession,
+        coldEmailFrequency: data.coldEmailFrequency,
       });
 
-      if (error) throw error;
+      if (error) throw new Error(error);
 
       if (!responseData?.sessionId) {
         throw new Error('No session ID returned');
       }
 
-      // Store session ID in localStorage
       localStorage.setItem(SESSION_STORAGE_KEY, responseData.sessionId);
       
       navigate('/prolific/app');
