@@ -30,7 +30,9 @@ const Index = () => {
 
       if (data.error) {
         console.error('API error:', data.error);
-        toast.error(data.error);
+        console.error('Error details:', data.details);
+        console.error('Error type:', data.type);
+        toast.error(data.details || data.error);
         return;
       }
 

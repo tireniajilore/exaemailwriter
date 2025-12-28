@@ -11,7 +11,7 @@ const corsHeaders = {
 };
 
 const PROMPT_VERSION = "v9.0-voice-first";
-const MODEL_NAME = "gemini-1.5-flash"; // Stable, fast, production-ready
+const MODEL_NAME = "gemini-2.5-flash";
 
 // Exa Research config
 const EXA_RESEARCH_TIMEOUT_MS = 60000; // 60 seconds - Exa needs time for quality research
@@ -883,10 +883,18 @@ async function callLLM(
   if (!response.ok) {
     const errorText = await response.text();
     console.error("Gemini API error:", response.status, errorText);
-    throw { status: response.status, message: errorText };
+    throw new Error(`Gemini API error (${response.status}): ${errorText}`);
   }
 
   const data = await response.json();
+  console.log("Gemini API response:", JSON.stringify(data, null, 2));
+
+  // Better error handling for response structure
+  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
+    console.error("Unexpected Gemini response structure:", JSON.stringify(data, null, 2));
+    throw new Error(`Unexpected Gemini API response structure: ${JSON.stringify(data)}`);
+  }
+
   return data.candidates[0].content.parts[0].text;
 }
 
@@ -1705,7 +1713,15 @@ Return JSON only:
     });
   } catch (error) {
     console.error("Unhandled error:", error);
-    return new Response(JSON.stringify({ error: "An unexpected error occurred. Please try again." }), {
+    console.error("Error stack:", error instanceof Error ? error.stack : "No stack trace");
+    console.error("Error message:", error instanceof Error ? error.message : String(error));
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return new Response(JSON.stringify({
+      error: "Failed to generate email. Please try again.",
+      details: errorMessage,
+      type: error instanceof Error ? error.constructor.name : typeof error
+    }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
