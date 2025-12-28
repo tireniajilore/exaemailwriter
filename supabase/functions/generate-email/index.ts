@@ -11,7 +11,7 @@ const corsHeaders = {
 };
 
 const PROMPT_VERSION = "v9.0-voice-first";
-const MODEL_NAME = "google/gemini-2.5-flash";
+const MODEL_NAME = "gemini-2.0-flash-exp"; // Google Gemini API model name
 
 // Exa Research config
 const EXA_RESEARCH_TIMEOUT_MS = 30000; // 30 seconds max budget
