@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ResearchEmailForm } from '@/components/ResearchEmailForm';
 import { EmailResult } from '@/components/EmailResult';
+import { GenerationProgress } from '@/components/GenerationProgress';
+import { HookPicker } from '@/components/HookPicker';
 import { supabase } from '@/integrations/supabase/client';
 import type { EmailRequest, EmailResponse } from '@/lib/prompt';
 import { toast } from 'sonner';
@@ -10,16 +12,107 @@ const Index = () => {
   const [result, setResult] = useState<EmailResponse | null>(null);
   const [debugTrace, setDebugTrace] = useState<any>(null);
   const [debugData, setDebugData] = useState<any>(null);
+  const [currentRequest, setCurrentRequest] = useState<EmailRequest | null>(null);
 
-  const handleSubmit = async (request: EmailRequest) => {
-    setIsLoading(true);
+  // NEW: Research jobs state
+  const [researchStatus, setResearchStatus] = useState<'idle' | 'researching' | 'ready' | 'generating'>('idle');
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const [hooks, setHooks] = useState<any[]>([]);
+  const [selectedHook, setSelectedHook] = useState<any | null>(null);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // NEW: Poll research status
+  useEffect(() => {
+    if (!requestId || researchStatus !== 'researching') {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      return;
+    }
+
+    const pollStatus = async () => {
+      try {
+        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+        const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+
+        const response = await fetch(
+          `${supabaseUrl}/functions/v1/research-status?requestId=${requestId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${supabaseKey}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          console.error('Poll error:', response.status);
+          return;
+        }
+
+        const data = await response.json();
+        console.log('Research status:', data.status, 'Hooks:', data.counts.hooks);
+
+        if (data.status === 'complete') {
+          setHooks(data.hooks || []);
+          setResearchStatus('ready');
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+
+          // Auto-select first hook after 1.2s
+          if (data.hooks && data.hooks.length > 0) {
+            setTimeout(() => {
+              setSelectedHook(data.hooks[0]);
+            }, 1200);
+          }
+        } else if (data.status === 'failed') {
+          toast.error('Research failed. Please try again.');
+          setResearchStatus('idle');
+          setIsLoading(false);
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        }
+      } catch (err) {
+        console.error('Poll error:', err);
+      }
+    };
+
+    // Poll every 700ms
+    pollIntervalRef.current = setInterval(pollStatus, 700);
+
+    // Initial poll
+    pollStatus();
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, [requestId, researchStatus]);
+
+  // NEW: Generate email when hook is selected
+  useEffect(() => {
+    if (selectedHook && researchStatus === 'ready' && currentRequest) {
+      generateEmailWithHook();
+    }
+  }, [selectedHook]);
+
+  const generateEmailWithHook = async () => {
+    if (!selectedHook || !currentRequest) return;
+
+    setResearchStatus('generating');
     setResult(null);
-    setDebugTrace(null);
-    setDebugData(null);
 
     try {
       const { data, error } = await supabase.functions.invoke('generate-email', {
-        body: request,
+        body: {
+          ...currentRequest,
+          selectedHook,
+        },
       });
 
       if (error) {
@@ -30,8 +123,6 @@ const Index = () => {
 
       if (data.error) {
         console.error('API error:', data.error);
-        console.error('Error details:', data.details);
-        console.error('Error type:', data.type);
         toast.error(data.details || data.error);
         return;
       }
@@ -41,12 +132,8 @@ const Index = () => {
         body: data.body,
       });
 
-      // Capture debug data if present
       if (data.debug) {
         setDebugData(data.debug);
-        console.log('Debug Data:', data.debug);
-
-        // Also capture trace specifically if it exists
         if (data.debug.trace) {
           setDebugTrace(data.debug.trace);
         }
@@ -55,6 +142,51 @@ const Index = () => {
       console.error('Error generating email:', err);
       toast.error('Something went wrong. Please try again.');
     } finally {
+      setIsLoading(false);
+      setResearchStatus('idle');
+    }
+  };
+
+  const handleSubmit = async (request: EmailRequest) => {
+    setIsLoading(true);
+    setResult(null);
+    setDebugTrace(null);
+    setDebugData(null);
+    setCurrentRequest(request);
+    setHooks([]);
+    setSelectedHook(null);
+
+    // NEW FLOW: Start research job
+    try {
+      const { data, error } = await supabase.functions.invoke('research', {
+        body: {
+          recipientName: request.recipientName,
+          recipientCompany: request.recipientCompany,
+          recipientRole: request.recipientRole,
+          senderIntent: request.reachingOutBecause,
+        },
+      });
+
+      if (error) {
+        console.error('Research start error:', error);
+        toast.error('Failed to start research. Please try again.');
+        setIsLoading(false);
+        return;
+      }
+
+      if (data.error) {
+        console.error('Research API error:', data.error);
+        toast.error(data.error);
+        setIsLoading(false);
+        return;
+      }
+
+      console.log('Research started:', data.requestId);
+      setRequestId(data.requestId);
+      setResearchStatus('researching');
+    } catch (err) {
+      console.error('Error starting research:', err);
+      toast.error('Something went wrong. Please try again.');
       setIsLoading(false);
     }
   };
@@ -87,8 +219,43 @@ const Index = () => {
           <ResearchEmailForm onSubmit={handleSubmit} isLoading={isLoading} />
         </main>
 
-        {/* Results */}
-        {result && (
+        {/* Progress Indicator (shown during research) */}
+        {researchStatus === 'researching' && currentRequest && (
+          <div className="mt-12 border-t border-foreground pt-8">
+            <GenerationProgress
+              recipientName={currentRequest.recipientName}
+              recipientCompany={currentRequest.recipientCompany}
+            />
+          </div>
+        )}
+
+        {/* Hook Picker (shown when research is complete) */}
+        {researchStatus === 'ready' && hooks.length > 0 && (
+          <div className="mt-12 border-t border-foreground pt-8">
+            <HookPicker
+              hooks={hooks}
+              selectedHook={selectedHook}
+              onSelectHook={setSelectedHook}
+            />
+          </div>
+        )}
+
+        {/* Progress during email generation */}
+        {researchStatus === 'generating' && (
+          <div className="mt-12 border-t border-foreground pt-8">
+            <div className="space-y-4 py-8 text-center">
+              <div className="font-serif text-xl font-medium">
+                Generating your email...
+              </div>
+              <p className="text-muted-foreground font-body">
+                Using your selected hook to craft a personalized message
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Results (shown after email generation complete) */}
+        {result && !isLoading && (
           <div className="mt-12 border-t border-foreground pt-8">
             <EmailResult result={result} />
           </div>

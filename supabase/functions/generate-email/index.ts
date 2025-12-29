@@ -1356,6 +1356,9 @@ serve(async (req) => {
     const credibilityStory = body.credibilityStory || "";
     const sharedAffiliation = body.sharedAffiliation || null;
 
+    // NEW: Accept selected hook from research_jobs flow
+    const selectedHook = body.selectedHook || null;
+
     const source = body.source || "app";
     const scenarioName = body.scenario_name || body.scenarioName || null;
     const sessionId = body.sessionId || null;
@@ -1432,11 +1435,28 @@ serve(async (req) => {
       });
     }
 
-    // ============= V2 RESEARCH (SINGLE EXA RESEARCH CALL) =============
+    // ============= V2 RESEARCH =============
+    // NEW FLOW: If selectedHook is provided, skip research (frontend already did it via research_jobs)
+    // OLD FLOW: Still support direct Exa Research Agent call for backwards compatibility
     let researchResult: V2ResearchResult | null = null;
 
-    if (EXA_API_KEY) {
-      console.log("Starting V2 research (Exa Research API)...");
+    if (selectedHook) {
+      console.log("Using pre-selected hook from research_jobs flow");
+      console.log(`Selected hook: "${selectedHook.title}" (confidence: ${selectedHook.confidence})`);
+
+      // Trace: using selected hook
+      trace.push({
+        stage: "research_source",
+        decision: "using_selected_hook",
+        counts: {
+          hook_confidence: selectedHook.confidence,
+        },
+      });
+
+      // We'll use selectedHook directly in email generation below
+      // No need to populate researchResult for the new flow
+    } else if (EXA_API_KEY) {
+      console.log("Starting V2 research (Exa Research API - legacy flow)...");
 
       // Trace: research start
       trace.push({
@@ -1481,10 +1501,10 @@ serve(async (req) => {
         // Don't set researchResult - it will remain undefined and we'll proceed without hooks
       }
     } else {
-      console.log("EXA_API_KEY not configured, skipping research");
+      console.log("No research data provided and EXA_API_KEY not configured");
       trace.push({
-        stage: "exa_research_start",
-        decision: "exa_api_key_missing",
+        stage: "research_source",
+        decision: "no_research_available",
       });
     }
 
@@ -1504,7 +1524,25 @@ IMPORTANT: Only use this if no stronger craft/problem/constraint parallel exists
 
     // Build Hook Packs section
     let hookPacksSection = "";
-    if (researchResult && researchResult.hookPacks.length > 0) {
+
+    // NEW FLOW: Use selectedHook if provided from research_jobs
+    if (selectedHook) {
+      const sources = selectedHook.sources || [];
+      const sourcesText = sources.map((s: any) => `${s.label}: ${s.url}`).join('\n   ');
+
+      hookPacksSection = `
+RESEARCH FOUND (use to craft your "Like you," line):
+[SELECTED HOOK] ${selectedHook.title}
+   Hook: ${selectedHook.hook}
+   Why it works: ${selectedHook.whyItWorks}
+   Confidence: ${(selectedHook.confidence * 100).toFixed(0)}%
+   ${sourcesText ? `Sources:\n   ${sourcesText}` : ''}
+
+INSTRUCTIONS:
+- This hook was specifically selected by the user
+- Use it to craft a natural "Like you," line
+- Reference the specific fact from the hook somewhere in the email`;
+    } else if (researchResult && researchResult.hookPacks.length > 0) {
       const topHookPacks = [...researchResult.hookPacks]
         .sort((a, b) => b.scores.intent_fit - a.scores.intent_fit)
         .slice(0, 2);
@@ -1518,12 +1556,12 @@ ${topHookPacks
 [${labels[i]}] SPECIFIC FACT: ${hp.hook_fact.claim}
    Evidence: "${hp.hook_fact.evidence}"
    Source: ${hp.hook_fact.source_url}
-   
+
    RAW INGREDIENTS FOR "Like you,":
    - What you both do: ${hp.bridge.like_you_ingredients.shared_action}
    - The world you share: ${hp.bridge.like_you_ingredients.shared_axis}
    - Why it matters: ${hp.bridge.like_you_ingredients.shared_stakes}
-   
+
    Intent fit: ${(hp.scores.intent_fit * 100).toFixed(0)}%
 `,
   )

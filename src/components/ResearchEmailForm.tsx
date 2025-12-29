@@ -328,14 +328,7 @@ export function ResearchEmailForm({ onSubmit, isLoading }: ResearchEmailFormProp
         disabled={isLoading || !isFormValid}
         className="w-full bg-foreground text-background font-medium h-12 text-base transition-all hover:bg-foreground/90 disabled:opacity-50 rounded-none"
       >
-        {isLoading ? (
-          <>
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-            Researching & Generating...
-          </>
-        ) : (
-          'Generate Email'
-        )}
+        {isLoading ? 'Generating...' : 'Generate Email'}
       </Button>
     </form>
   );
