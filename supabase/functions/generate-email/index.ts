@@ -14,7 +14,7 @@ const PROMPT_VERSION = "v9.0-voice-first";
 const MODEL_NAME = "gemini-2.5-flash";
 
 // Exa Research config
-const EXA_RESEARCH_TIMEOUT_MS = 60000; // 60 seconds - Exa needs time for quality research
+const EXA_RESEARCH_TIMEOUT_MS = 90000; // 90 seconds - Exa needs time to complete research gathering phase
 const EXA_RESEARCH_POLL_INTERVAL_MS = 2000; // 2 seconds (faster polling for early stop)
 
 // Helper to build response headers with deploy version and generation ID
@@ -453,6 +453,7 @@ interface ExaResearchResult {
   output?: FlatExaResearchOutput;
   error?: string;
   latency_ms?: number;
+  partial?: boolean; // True if this was partial data grabbed at timeout
   // Debug fields
   exa_http_status?: number;
   exa_response_bytes?: number;
@@ -555,16 +556,20 @@ async function pollExaResearchTask(
 
       // DEBUG: Capture top-level keys
       const rawKeys = Object.keys(data);
+      const elapsed = Date.now() - startTime;
 
-      console.log(`[exa_research] Poll ${pollCount}: status=${data.status} http_status=${httpStatus} bytes=${responseBytes} keys=${rawKeys.join(',')} generation_id=${generationId}`);
+      console.log(`[exa_research] Poll ${pollCount}: status=${data.status} elapsed=${elapsed}ms http_status=${httpStatus} bytes=${responseBytes} keys=${rawKeys.join(',')} generation_id=${generationId}`);
 
       if (data.status === "completed") {
         const latency = Date.now() - startTime;
         console.log(`[exa_research] Completed in ${latency}ms (${pollCount} polls) generation_id=${generationId}`);
 
-        // Extract parsed output
-        const parsed = data.result?.parsed;
+        // Extract parsed output - Exa returns it in data.output, not data.result.parsed
+        const parsed = data.output;
+        console.log(`[exa_research] Output present: ${!!parsed}, type: ${typeof parsed}, generation_id=${generationId}`);
+
         if (!parsed) {
+          console.error(`[exa_research] No output in response. Full data:`, JSON.stringify(data, null, 2));
           return {
             researchId,
             status: "failed",
@@ -607,8 +612,62 @@ async function pollExaResearchTask(
     }
   }
 
-  // Timeout
-  console.error(`[exa_research] Timeout after ${timeoutMs}ms generation_id=${generationId}`);
+  // Timeout - make one final attempt to grab partial results
+  console.error(`[exa_research] Timeout after ${timeoutMs}ms, attempting final poll for partial results generation_id=${generationId}`);
+
+  try {
+    const response = await fetch(`https://api.exa.ai/research/v1/${researchId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${exaApiKey}`,
+      },
+    });
+
+    if (response.ok) {
+      const rawText = await response.text();
+      const data = JSON.parse(rawText);
+
+      console.log(`[exa_research] Final poll status: ${data.status} generation_id=${generationId}`);
+
+      // If we have any output, even if status is still "pending", try to use it
+      // BUT: Only accept it if it has the minimum required structure
+      if (data.output && typeof data.output === 'object') {
+        console.log(`[exa_research] Found partial output on timeout. Output keys: ${Object.keys(data.output).join(', ')} generation_id=${generationId}`);
+        console.log(`[exa_research] Partial output structure: has_hook_packs=${!!data.output.hook_packs}, has_identity_decision=${!!data.output.identity_decision}, has_fallback_mode=${!!data.output.fallback_mode} generation_id=${generationId}`);
+        console.log(`[exa_research] Full partial output: ${JSON.stringify(data.output, null, 2)}`);
+
+        // Ensure minimum required fields exist with defaults
+        const normalizedOutput: FlatExaResearchOutput = {
+          identity_canonical_name: data.output.identity_canonical_name || "",
+          identity_company: data.output.identity_company || "",
+          identity_role: data.output.identity_role || "",
+          identity_confidence: typeof data.output.identity_confidence === 'number' ? data.output.identity_confidence : 0,
+          identity_decision: (data.output.identity_decision as IdentityDecision) || "FAIL",
+          identity_disambiguators: Array.isArray(data.output.identity_disambiguators) ? data.output.identity_disambiguators : [],
+          hook_packs: Array.isArray(data.output.hook_packs) ? data.output.hook_packs : [],
+          fallback_mode: (data.output.fallback_mode as "sufficient" | "minimal" | "failed") || "failed",
+          fallback_reason: data.output.fallback_reason || "Partial results at timeout",
+          profile_education: Array.isArray(data.output.profile_education) ? data.output.profile_education : [],
+          profile_past_companies: Array.isArray(data.output.profile_past_companies) ? data.output.profile_past_companies : [],
+          profile_named_artifacts: Array.isArray(data.output.profile_named_artifacts) ? data.output.profile_named_artifacts : [],
+          profile_key_topics: Array.isArray(data.output.profile_key_topics) ? data.output.profile_key_topics : [],
+          citations: Array.isArray(data.output.citations) ? data.output.citations : [],
+          research_notes: data.output.research_notes || "Partial results captured at timeout",
+        };
+
+        return {
+          researchId,
+          status: "completed",
+          output: normalizedOutput,
+          latency_ms: timeoutMs,
+          partial: true, // Flag to indicate this was partial data at timeout
+        };
+      }
+    }
+  } catch (e) {
+    console.error(`[exa_research] Final poll failed: ${e} generation_id=${generationId}`);
+  }
+
   return {
     researchId,
     status: "failed",
@@ -626,6 +685,7 @@ interface V2ResearchResult {
   minimalResearch: boolean;
   exaResearchId?: string;
   exaResearchLatencyMs?: number;
+  exaPartialResults?: boolean; // True if results were grabbed at timeout
   citations: { url: string; title?: string }[];
   identityDecision: IdentityDecision;
   identityConfidence: number;
@@ -651,17 +711,31 @@ async function performV2Research(
   console.log(`=== V2 Research (Exa Research API) === generation_id=${generationId}`);
 
   // Stage 0: Extract sender intent profile (still useful for email generation context)
-  const intentProfile = await extractSenderIntentProfile(
-    reachingOutBecause,
-    credibilityStory,
-    askType,
-    GEMINI_API_KEY,
-  );
+  let intentProfile: SenderIntentProfile;
+  try {
+    intentProfile = await extractSenderIntentProfile(
+      reachingOutBecause,
+      credibilityStory,
+      askType,
+      GEMINI_API_KEY,
+    );
 
-  console.log("Sender Intent Profile:", {
-    primary_theme: intentProfile.primary_theme,
-    must_include_terms: intentProfile.must_include_terms.slice(0, 5),
-  });
+    console.log("Sender Intent Profile:", {
+      primary_theme: intentProfile.primary_theme,
+      must_include_terms: intentProfile.must_include_terms.slice(0, 5),
+    });
+  } catch (e) {
+    console.error(`[sender_intent] Failed to extract sender intent profile: ${e} generation_id=${generationId}`);
+    return {
+      hookPacks: [],
+      senderIntentProfile: null,
+      minimalResearch: true,
+      citations: [],
+      identityDecision: "FAIL",
+      identityConfidence: 0,
+      notes: `Failed to extract sender intent profile: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 
   // Build instructions for Exa Research
   const instructions = buildExaResearchInstructions(
@@ -717,16 +791,20 @@ async function performV2Research(
 
   // Consume the output (TRUST THE SCHEMA - map flattened to internal types)
   const output = result.output;
-  
-  console.log(`[exa_research] identity_decision=${output.identity_decision} confidence=${output.identity_confidence} hook_packs=${output.hook_packs.length} fallback_mode=${output.fallback_mode} generation_id=${generationId}`);
+
+  console.log(`[exa_research] About to process output. Output keys: ${Object.keys(output).join(', ')} generation_id=${generationId}`);
+  console.log(`[exa_research] Output has hook_packs: ${!!output.hook_packs}, hook_packs type: ${typeof output.hook_packs}, is_array: ${Array.isArray(output.hook_packs)} generation_id=${generationId}`);
+  console.log(`[exa_research] identity_decision=${output.identity_decision} confidence=${output.identity_confidence} hook_packs=${output.hook_packs?.length || 0} fallback_mode=${output.fallback_mode} generation_id=${generationId}`);
 
   // Map flattened hook_packs to internal HookPack type
-  const hookPacks: HookPack[] = output.hook_packs.map(mapFlatHookPackToInternal);
+  const hookPacks: HookPack[] = output.hook_packs ? output.hook_packs.map(mapFlatHookPackToInternal) : [];
 
   // Build profile summary from flattened fields if needed
   // IMPORTANT: Always build profile in minimal/failed mode so LLM has context even on timeout
   let profileSummary: ProfileSummary | undefined;
-  if (output.fallback_mode === "minimal" || output.fallback_mode === "failed") {
+  const fallbackMode = output.fallback_mode || "failed";
+
+  if (fallbackMode === "minimal" || fallbackMode === "failed") {
     const hasProfileData =
       (output.profile_education && output.profile_education.length > 0) ||
       (output.profile_past_companies && output.profile_past_companies.length > 0) ||
@@ -751,7 +829,7 @@ async function performV2Research(
     }
   }
 
-  const isMinimalResearch = hookPacks.length === 0 || output.fallback_mode !== "sufficient";
+  const isMinimalResearch = hookPacks.length === 0 || fallbackMode !== "sufficient";
 
   return {
     hookPacks,
@@ -760,10 +838,11 @@ async function performV2Research(
     minimalResearch: isMinimalResearch,
     exaResearchId: researchId,
     exaResearchLatencyMs: result.latency_ms,
-    citations: output.citations,
-    identityDecision: output.identity_decision,
-    identityConfidence: output.identity_confidence,
-    notes: output.research_notes || output.fallback_reason,
+    exaPartialResults: result.partial || false,
+    citations: output.citations || [],
+    identityDecision: output.identity_decision || "FAIL",
+    identityConfidence: output.identity_confidence || 0,
+    notes: output.research_notes || output.fallback_reason || "No research notes available",
     exa_http_status: result.exa_http_status,
     exa_response_bytes: result.exa_response_bytes,
     exa_raw_keys: result.exa_raw_keys,
@@ -1392,11 +1471,14 @@ serve(async (req) => {
         });
       } catch (e) {
         console.error("V2 Research pipeline failed:", e);
+        console.error("Error details:", e instanceof Error ? e.message : String(e));
         trace.push({
           stage: "exa_research_complete",
           decision: "error",
           counts: { hook_packs: 0 },
+          error: e instanceof Error ? e.message : String(e),
         });
+        // Don't set researchResult - it will remain undefined and we'll proceed without hooks
       }
     } else {
       console.log("EXA_API_KEY not configured, skipping research");
@@ -1694,6 +1776,7 @@ Return JSON only:
           senderIntentProfile: researchResult.senderIntentProfile,
           exaResearchId: researchResult.exaResearchId,
           exaResearchLatencyMs: researchResult.exaResearchLatencyMs,
+          exaPartialResults: researchResult.exaPartialResults,
           identityDecision: researchResult.identityDecision,
           identityConfidence: researchResult.identityConfidence,
           citations: researchResult.citations,

@@ -101,6 +101,18 @@ const Index = () => {
               🔍 Debug Data (Full Object)
             </h3>
 
+            {/* Error/Notes section */}
+            {debugData.notes && (
+              <div className="mb-4 p-3 bg-red-50/10 border border-red-500/30 rounded">
+                <h4 className="font-mono text-xs font-semibold mb-2 text-red-600 dark:text-red-400">
+                  Research Notes
+                </h4>
+                <div className="text-xs text-red-500">
+                  {debugData.notes}
+                </div>
+              </div>
+            )}
+
             {/* Key metrics at the top */}
             <div className="mb-4 p-3 bg-background/50 rounded border border-border">
               <div className="grid grid-cols-2 gap-2 text-xs font-mono">
@@ -119,13 +131,22 @@ const Index = () => {
                 {debugData.exaResearchLatencyMs && (
                   <div>
                     <span className="text-muted-foreground">Research Time: </span>
-                    <span className="font-semibold">{(debugData.exaResearchLatencyMs / 1000).toFixed(1)}s</span>
+                    <span className="font-semibold">
+                      {(debugData.exaResearchLatencyMs / 1000).toFixed(1)}s
+                      {debugData.exaPartialResults && <span className="text-orange-500 ml-1">(partial)</span>}
+                    </span>
                   </div>
                 )}
                 {debugData.citations && (
                   <div>
                     <span className="text-muted-foreground">Citations: </span>
                     <span className="font-semibold">{debugData.citations.length}</span>
+                  </div>
+                )}
+                {debugData.exaResearchId && (
+                  <div className="col-span-2">
+                    <span className="text-muted-foreground">Research ID: </span>
+                    <span className="font-semibold text-xs">{debugData.exaResearchId}</span>
                   </div>
                 )}
               </div>
@@ -176,7 +197,9 @@ const Index = () => {
                       <div className="flex items-baseline gap-2">
                         <span className="font-semibold text-foreground">{idx + 1}. {entry.stage}</span>
                         {entry.decision && (
-                          <span className="text-muted-foreground">→ {entry.decision}</span>
+                          <span className={entry.decision === 'error' ? 'text-red-500' : 'text-muted-foreground'}>
+                            → {entry.decision}
+                          </span>
                         )}
                       </div>
                       {entry.counts && (
@@ -186,6 +209,11 @@ const Index = () => {
                               {key}: {typeof value === 'number' ? value : String(value)}
                             </span>
                           ))}
+                        </div>
+                      )}
+                      {entry.error && (
+                        <div className="text-red-500 mt-1 text-xs">
+                          Error: {entry.error}
                         </div>
                       )}
                     </div>
