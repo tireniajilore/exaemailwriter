@@ -107,35 +107,144 @@ export async function verifyIdentity(params: {
   }
 }
 
+// Phase 1.5: Generate Search Hypotheses with Gemini
+async function generateSearchHypotheses(params: {
+  name: string;
+  company: string;
+  role?: string;
+  senderIntent?: string;
+  credibilityStory?: string;
+  geminiApiKey: string;
+}): Promise<string[]> {
+  const { name, company, role, senderIntent, credibilityStory, geminiApiKey } = params;
+
+  if (!senderIntent || !credibilityStory) {
+    // Fall back to basic searches if we don't have the context
+    return [
+      `${name} ${company} ${role ?? ''} projects background`,
+      `${name} ${company} recent work`,
+      `${name} ${company} interview podcast article`
+    ];
+  }
+
+  const prompt = `You are helping craft targeted research queries for a cold email to ${name} at ${company}${role ? ` (${role})` : ''}.
+
+SENDER'S INTENT:
+${senderIntent}
+
+SENDER'S CREDIBILITY STORY:
+${credibilityStory}
+
+TASK: Generate 3 specific search hypotheses about what aspects of ${name}'s work would be most relevant to the sender's intent.
+
+Think about:
+1. What shared interests, challenges, or domains exist between sender and recipient?
+2. What specific projects, initiatives, or topics has ${name} likely worked on that align with the sender's intent?
+3. What unique angles could create a strong connection?
+
+Return ONLY a JSON array of 3 search query strings (no explanations):
+["search query 1", "search query 2", "search query 3"]
+
+Each query should combine ${name}'s name, company, and a specific topic/hypothesis.
+
+Example format:
+["Jane Smith Stripe building payment infrastructure emerging markets", "Jane Smith Stripe scaling fintech teams", "Jane Smith engineering leadership financial inclusion"]`;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: prompt }]
+          }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 512,
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      console.error(`[generateSearchHypotheses] Gemini error: ${response.status}`);
+      return [
+        `${name} ${company} ${role ?? ''} projects`,
+        `${name} ${company} recent work`,
+        `${name} ${company} leadership`
+      ];
+    }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+
+    // Extract JSON array from response
+    const jsonMatch = text.match(/\[[\s\S]*?\]/);
+    if (!jsonMatch) {
+      console.error(`[generateSearchHypotheses] No JSON array found`);
+      return [
+        `${name} ${company} ${role ?? ''} projects`,
+        `${name} ${company} recent work`,
+        `${name} ${company} leadership`
+      ];
+    }
+
+    const hypotheses = JSON.parse(jsonMatch[0]);
+
+    if (!Array.isArray(hypotheses) || hypotheses.length === 0) {
+      console.error(`[generateSearchHypotheses] Invalid hypotheses format`);
+      return [
+        `${name} ${company} ${role ?? ''} projects`,
+        `${name} ${company} recent work`,
+        `${name} ${company} leadership`
+      ];
+    }
+
+    console.log(`[generateSearchHypotheses] Generated ${hypotheses.length} hypotheses:`, hypotheses);
+    return hypotheses.slice(0, 3);
+
+  } catch (error) {
+    console.error(`[generateSearchHypotheses] Error:`, error);
+    return [
+      `${name} ${company} ${role ?? ''} projects`,
+      `${name} ${company} recent work`,
+      `${name} ${company} leadership`
+    ];
+  }
+}
+
 // Phase 2: Content Discovery
 export async function discoverContent(params: {
   name: string;
   company: string;
   role?: string;
   senderIntent?: string;
+  credibilityStory?: string;
   exaApiKey: string;
+  geminiApiKey: string;
 }): Promise<ContentDiscoveryResult> {
-  const { name, company, role, senderIntent, exaApiKey } = params;
+  const { name, company, role, senderIntent, credibilityStory, exaApiKey, geminiApiKey } = params;
 
   console.log(`[discoverContent] Starting discovery for ${name} at ${company}`);
 
-  const searches = [
-    // Profile search
-    {
-      query: `${name} ${company} ${role ?? ''} projects background`.trim(),
-      label: 'profile'
-    },
-    // Intent search (if provided)
-    senderIntent ? {
-      query: `${name} ${company} ${senderIntent} talks about`.trim(),
-      label: 'intent'
-    } : null,
-    // Recent activity
-    {
-      query: `${name} ${company} interview podcast article`.trim(),
-      label: 'recent'
-    }
-  ].filter(Boolean) as Array<{ query: string; label: string }>;
+  // Generate smart search hypotheses using Gemini
+  const hypotheses = await generateSearchHypotheses({
+    name,
+    company,
+    role,
+    senderIntent,
+    credibilityStory,
+    geminiApiKey
+  });
+
+  const searches = hypotheses.map((query, i) => ({
+    query,
+    label: `hypothesis_${i + 1}`
+  }));
 
   try {
     const searchPromises = searches.map(async (search) => {

@@ -160,6 +160,7 @@ const Index = () => {
           recipientCompany: request.recipientCompany,
           recipientRole: request.recipientRole,
           senderIntent: request.reachingOutBecause,
+          credibilityStory: request.credibilityStory,
         },
       });
 

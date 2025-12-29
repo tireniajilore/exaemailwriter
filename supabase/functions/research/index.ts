@@ -12,6 +12,7 @@ interface ResearchRequest {
   recipientCompany: string;
   recipientRole?: string;
   senderIntent?: string;
+  credibilityStory?: string;
 }
 
 serve(async (req) => {
@@ -23,7 +24,7 @@ serve(async (req) => {
   try {
     // Parse request body
     const body: ResearchRequest = await req.json();
-    const { recipientName, recipientCompany, recipientRole, senderIntent } = body;
+    const { recipientName, recipientCompany, recipientRole, senderIntent, credibilityStory } = body;
 
     // Validate required fields
     if (!recipientName || !recipientCompany) {
@@ -55,6 +56,7 @@ serve(async (req) => {
         recipient_company: recipientCompany,
         recipient_role: recipientRole ?? null,
         sender_intent: senderIntent ?? null,
+        credibility_story: credibilityStory ?? null,
         progress: {},
         urls: [],
         hooks: [],

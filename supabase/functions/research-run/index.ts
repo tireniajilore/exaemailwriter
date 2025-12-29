@@ -86,6 +86,7 @@ serve(async (req) => {
     const company = job.recipient_company ?? '';
     const role = job.recipient_role ?? undefined;
     const senderIntent = job.sender_intent ?? undefined;
+    const credibilityStory = job.credibility_story ?? undefined;
 
     // Helper function to update job status
     async function updateJob(updates: any) {
@@ -147,7 +148,9 @@ serve(async (req) => {
         company,
         role,
         senderIntent,
-        exaApiKey
+        credibilityStory,
+        exaApiKey,
+        geminiApiKey
       });
 
       console.log(`[research-run] Discovered ${discoveryResult.foundCount} sources`);
