@@ -35,7 +35,7 @@ export function HookPicker({ hooks, selectedHook, onSelectHook, partial }: HookP
     <div className="space-y-6 py-8">
       <div>
         <div className="flex items-center gap-3 mb-2">
-          <h3 className="font-serif text-xl font-medium">Select a Hook</h3>
+          <h3 className="font-serif text-xl font-medium">Research Complete</h3>
           {partial && (
             <Badge variant="outline" className="text-amber-600 border-amber-600">
               Partial Research
@@ -43,7 +43,7 @@ export function HookPicker({ hooks, selectedHook, onSelectHook, partial }: HookP
           )}
         </div>
         <p className="text-sm text-muted-foreground font-body">
-          Choose which personalization hook to use in your email
+          We found {hooks.length} personalization {hooks.length === 1 ? 'hook' : 'hooks'}. Click one to generate your email.
         </p>
       </div>
 
@@ -57,7 +57,7 @@ export function HookPicker({ hooks, selectedHook, onSelectHook, partial }: HookP
               key={hook.id}
               onClick={() => onSelectHook(hook)}
               className={cn(
-                'p-4 cursor-pointer transition-all hover:border-foreground',
+                'p-4 cursor-pointer transition-all hover:border-foreground hover:shadow-md',
                 isSelected && 'border-foreground bg-muted/30'
               )}
             >

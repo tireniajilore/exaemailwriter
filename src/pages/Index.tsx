@@ -56,16 +56,10 @@ const Index = () => {
         if (data.status === 'complete') {
           setHooks(data.hooks || []);
           setResearchStatus('ready');
+          setIsLoading(false); // Stop showing loading state when hooks are ready
           if (pollIntervalRef.current) {
             clearInterval(pollIntervalRef.current);
             pollIntervalRef.current = null;
-          }
-
-          // Auto-select first hook after 1.2s
-          if (data.hooks && data.hooks.length > 0) {
-            setTimeout(() => {
-              setSelectedHook(data.hooks[0]);
-            }, 1200);
           }
         } else if (data.status === 'failed') {
           toast.error('Research failed. Please try again.');
@@ -94,24 +88,26 @@ const Index = () => {
     };
   }, [requestId, researchStatus]);
 
-  // NEW: Generate email when hook is selected
-  useEffect(() => {
-    if (selectedHook && researchStatus === 'ready' && currentRequest) {
-      generateEmailWithHook();
+  // NEW: Generate email when hook is selected (only when user clicks)
+  const handleHookSelect = (hook: any) => {
+    setSelectedHook(hook);
+    if (currentRequest) {
+      generateEmailWithHook(hook);
     }
-  }, [selectedHook]);
+  };
 
-  const generateEmailWithHook = async () => {
-    if (!selectedHook || !currentRequest) return;
+  const generateEmailWithHook = async (hook: any) => {
+    if (!hook || !currentRequest) return;
 
     setResearchStatus('generating');
+    setIsLoading(true);
     setResult(null);
 
     try {
       const { data, error } = await supabase.functions.invoke('generate-email', {
         body: {
           ...currentRequest,
-          selectedHook,
+          selectedHook: hook,
         },
       });
 
@@ -235,7 +231,7 @@ const Index = () => {
             <HookPicker
               hooks={hooks}
               selectedHook={selectedHook}
-              onSelectHook={setSelectedHook}
+              onSelectHook={handleHookSelect}
             />
           </div>
         )}
