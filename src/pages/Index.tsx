@@ -1,10 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { ResearchEmailForm } from '@/components/ResearchEmailForm';
-import { EmailResult } from '@/components/EmailResult';
-import { GenerationProgress } from '@/components/GenerationProgress';
-import { HookPicker } from '@/components/HookPicker';
+import { ResearchProgressEnhanced } from '@/components/ResearchProgressEnhanced';
+import { HookExplorer } from '@/components/HookExplorer';
+import { CredibilityRefiner } from '@/components/CredibilityRefiner';
+import { EmailPreview } from '@/components/EmailPreview';
+import { StepIndicator } from '@/components/StepIndicator';
+import { IntentForm, type IntentFormData } from '@/components/IntentForm';
 import { supabase } from '@/integrations/supabase/client';
 import type { EmailRequest, EmailResponse } from '@/lib/prompt';
+import type { WizardStep, ResearchPhase } from '@/types/wizard';
+import { WIZARD_STEPS } from '@/types/wizard';
 import { toast } from 'sonner';
 
 const Index = () => {
@@ -13,6 +17,11 @@ const Index = () => {
   const [debugTrace, setDebugTrace] = useState<any>(null);
   const [debugData, setDebugData] = useState<any>(null);
   const [currentRequest, setCurrentRequest] = useState<EmailRequest | null>(null);
+
+  // Wizard state
+  const [wizardStep, setWizardStep] = useState<WizardStep>(1);
+  const [researchPhase, setResearchPhase] = useState<ResearchPhase>('pending');
+  const [intentData, setIntentData] = useState<IntentFormData | null>(null);
 
   // NEW: Research jobs state
   const [researchStatus, setResearchStatus] = useState<'idle' | 'researching' | 'ready' | 'generating'>('idle');
@@ -23,6 +32,8 @@ const Index = () => {
 
   // Debug: Real-time research progress
   const [researchDebug, setResearchDebug] = useState<any>(null);
+  const [researchStartTime, setResearchStartTime] = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
 
   // NEW: Poll research status
   useEffect(() => {
@@ -65,15 +76,20 @@ const Index = () => {
           counts: data.counts,
           urls: data.urls,
           hooks: data.hooks,
+          hypotheses: data.hypotheses,
           partial: data.partial,
           fallback_mode: data.fallback_mode,
           error: data.error,
           updated_at: data.updated_at,
+          started_at: data.started_at,
+          completed_at: data.completed_at,
+          duration_sec: data.duration_sec,
         });
 
         if (data.status === 'complete') {
           setHooks(data.hooks || []);
           setResearchStatus('ready');
+          setResearchPhase('complete'); // Update wizard research phase
           setIsLoading(false); // Stop showing loading state when hooks are ready
           if (pollIntervalRef.current) {
             clearInterval(pollIntervalRef.current);
@@ -82,6 +98,8 @@ const Index = () => {
         } else if (data.status === 'failed') {
           toast.error(data.error || 'Research failed. Please try again.');
           setResearchStatus('idle');
+          setResearchPhase('pending');
+          setWizardStep(1); // Go back to step 1 on failure
           setIsLoading(false);
           if (pollIntervalRef.current) {
             clearInterval(pollIntervalRef.current);
@@ -106,12 +124,105 @@ const Index = () => {
     };
   }, [requestId, researchStatus]);
 
-  // NEW: Generate email when hook is selected (only when user clicks)
+  // Timer effect to track elapsed time
+  useEffect(() => {
+    if (researchStatus === 'researching' && researchStartTime) {
+      const timer = setInterval(() => {
+        setElapsedTime(Date.now() - researchStartTime);
+      }, 100);
+
+      return () => clearInterval(timer);
+    }
+  }, [researchStatus, researchStartTime]);
+
+  // NEW: Handle hook selection (Step 2 → Step 3)
   const handleHookSelect = (hook: any) => {
     setSelectedHook(hook);
-    if (currentRequest) {
-      generateEmailWithHook(hook);
+    setWizardStep(3);
+  };
+
+  // NEW: Handle credibility submission (Step 3 → Step 4)
+  const handleCredibilitySubmit = async (data: { credibilityStory: string; sharedAffiliation?: any }) => {
+    if (!selectedHook || !intentData) return;
+
+    setIsLoading(true);
+    setWizardStep(4);
+
+    try {
+      const { data: emailData, error } = await supabase.functions.invoke('generate-email', {
+        body: {
+          recipientName: intentData.recipientName,
+          recipientCompany: intentData.recipientCompany,
+          recipientRole: intentData.recipientRole,
+          askType: intentData.askType || 'chat',
+          reachingOutBecause: intentData.senderIntent,
+          credibilityStory: data.credibilityStory,
+          sharedAffiliation: data.sharedAffiliation,
+          selectedHook: selectedHook,
+        },
+      });
+
+      if (error) {
+        console.error('Email generation error:', error);
+        toast.error('Failed to generate email. Please try again.');
+        setWizardStep(3);
+        setIsLoading(false);
+        return;
+      }
+
+      if (emailData.error) {
+        console.error('API error:', emailData.error);
+        toast.error(emailData.details || emailData.error);
+        setWizardStep(3);
+        setIsLoading(false);
+        return;
+      }
+
+      setResult({
+        subject: emailData.subject,
+        body: emailData.body,
+      });
+
+      if (emailData.debug) {
+        setDebugData(emailData.debug);
+        if (emailData.debug.trace) {
+          setDebugTrace(emailData.debug.trace);
+        }
+      }
+    } catch (err) {
+      console.error('Error generating email:', err);
+      toast.error('Something went wrong. Please try again.');
+      setWizardStep(3);
+    } finally {
+      setIsLoading(false);
     }
+  };
+
+  // NEW: Try different hook (Step 4 → Step 3 with different hook)
+  const handleTryDifferentHook = (hook: any) => {
+    setSelectedHook(hook);
+    setResult(null);
+    setWizardStep(3);
+  };
+
+  // NEW: Edit credibility (Step 4 → Step 3)
+  const handleEditCredibility = () => {
+    setResult(null);
+    setWizardStep(3);
+  };
+
+  // NEW: Start over (Step 4 → Step 1)
+  const handleStartOver = () => {
+    setWizardStep(1);
+    setResearchPhase('pending');
+    setIntentData(null);
+    setRequestId(null);
+    setHooks([]);
+    setSelectedHook(null);
+    setResult(null);
+    setResearchDebug(null);
+    setDebugData(null);
+    setDebugTrace(null);
   };
 
   const generateEmailWithHook = async (hook: any) => {
@@ -158,6 +269,64 @@ const Index = () => {
     } finally {
       setIsLoading(false);
       setResearchStatus('idle');
+    }
+  };
+
+  // NEW: Handle intent form submission (Step 1 → Step 2)
+  const handleIntentSubmit = async (data: IntentFormData) => {
+    setIntentData(data);
+    setIsLoading(true);
+    setResult(null);
+    setDebugTrace(null);
+    setDebugData(null);
+    setResearchDebug(null);
+    setHooks([]);
+    setSelectedHook(null);
+    setResearchStartTime(Date.now());
+    setElapsedTime(0);
+
+    // Move to step 2 and start research
+    setWizardStep(2);
+    setResearchPhase('active');
+
+    try {
+      const { data: researchData, error } = await supabase.functions.invoke('research', {
+        body: {
+          recipientName: data.recipientName,
+          recipientCompany: data.recipientCompany,
+          recipientRole: data.recipientRole,
+          senderIntent: data.senderIntent,
+          // credibilityStory will come later in Step 3
+        },
+      });
+
+      if (error) {
+        console.error('Research start error:', error);
+        toast.error('Failed to start research. Please try again.');
+        setIsLoading(false);
+        setWizardStep(1);
+        setResearchPhase('pending');
+        return;
+      }
+
+      if (researchData.error) {
+        console.error('Research API error:', researchData.error);
+        toast.error(researchData.error);
+        setIsLoading(false);
+        setWizardStep(1);
+        setResearchPhase('pending');
+        return;
+      }
+
+      console.log('Research started:', researchData.requestId);
+      setRequestId(researchData.requestId);
+      setResearchStatus('researching');
+    } catch (err) {
+      console.error('Error starting research:', err);
+      toast.error('Something went wrong. Please try again.');
+      setIsLoading(false);
+      setWizardStep(1);
+      setResearchPhase('pending');
     }
   };
 
@@ -209,55 +378,87 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="container mx-auto max-w-2xl px-4 py-16">
-        {/* Masthead */}
-        <header className="mb-12 text-center border-b border-foreground pb-8">
-          <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground mb-3">
-            The MBA Networking Toolkit
-          </p>
-          <h1 className="font-serif text-4xl sm:text-5xl font-medium tracking-tight mb-4 italic">
-            Cold Email Assistant
-          </h1>
-          <p className="text-muted-foreground font-body text-lg">
-            Describe a real person. We'll research and draft a personalized email.
-          </p>
-        </header>
+      {/* Step Indicator - only show when in wizard mode */}
+      {wizardStep > 0 && <StepIndicator currentStep={wizardStep} steps={WIZARD_STEPS} />}
 
+      <div className="container mx-auto max-w-2xl px-4 py-16">
         {/* Main Content */}
         <main>
-          <div className="border-t border-foreground pt-8 mb-8">
-            <h2 className="font-serif text-2xl font-medium mb-2">Compose Your Message</h2>
-            <p className="text-muted-foreground text-sm font-body">
-              Complete the fields below. We'll use public information to personalize your email.
-            </p>
-          </div>
+          {/* Step 1: Intent Form */}
+          {wizardStep === 1 && (
+            <IntentForm onSubmit={handleIntentSubmit} isLoading={isLoading} />
+          )}
 
-          <ResearchEmailForm onSubmit={handleSubmit} isLoading={isLoading} />
+          {/* Step 2: Research Progress (active phase) */}
+          {wizardStep === 2 && researchPhase === 'active' && intentData && (
+            <div className="border-t border-foreground pt-8">
+              <ResearchProgressEnhanced
+                recipientName={intentData.recipientName}
+                recipientCompany={intentData.recipientCompany}
+                status={researchDebug?.status || 'queued'}
+                phaseLabel={researchDebug?.phaseLabel || 'Starting research...'}
+                progress={researchDebug?.progress || { phase: 1, total: 4 }}
+                counts={researchDebug?.counts || { urls: 0, hooks: 0, hypotheses: 0 }}
+                elapsedTime={elapsedTime}
+              />
+            </div>
+          )}
+
+          {/* Step 2: Hook Selection (complete phase) */}
+          {wizardStep === 2 && researchPhase === 'complete' && (
+            <div className="border-t border-foreground pt-8">
+              <HookExplorer
+                hooks={hooks}
+                selectedHook={selectedHook}
+                onSelectHook={handleHookSelect}
+                partial={researchDebug?.partial}
+                fallbackMode={researchDebug?.fallback_mode}
+              />
+            </div>
+          )}
+
+          {/* Step 3: Credibility Refiner */}
+          {wizardStep === 3 && selectedHook && intentData && (
+            <div className="border-t border-foreground pt-8">
+              <CredibilityRefiner
+                selectedHook={selectedHook}
+                recipientName={intentData.recipientName}
+                onSubmit={handleCredibilitySubmit}
+                isLoading={isLoading}
+              />
+            </div>
+          )}
+
+          {/* Step 4: Email Preview */}
+          {wizardStep === 4 && result && (
+            <div className="border-t border-foreground pt-8">
+              <EmailPreview
+                result={result}
+                selectedHook={selectedHook}
+                availableHooks={hooks}
+                onTryDifferentHook={handleTryDifferentHook}
+                onEditCredibility={handleEditCredibility}
+                onStartOver={handleStartOver}
+              />
+            </div>
+          )}
+
+          {/* Fallback: Old form (for now, until we fully migrate) */}
+          {wizardStep === 0 && (
+            <>
+              <div className="border-t border-foreground pt-8 mb-8">
+                <h2 className="font-serif text-2xl font-medium mb-2">Compose Your Message</h2>
+                <p className="text-muted-foreground text-sm font-body">
+                  Complete the fields below. We'll use public information to personalize your email.
+                </p>
+              </div>
+              <ResearchEmailForm onSubmit={handleSubmit} isLoading={isLoading} />
+            </>
+          )}
         </main>
 
-        {/* Progress Indicator (shown during research) */}
-        {researchStatus === 'researching' && currentRequest && (
-          <div className="mt-12 border-t border-foreground pt-8">
-            <GenerationProgress
-              recipientName={currentRequest.recipientName}
-              recipientCompany={currentRequest.recipientCompany}
-            />
-          </div>
-        )}
-
-        {/* Hook Picker (shown when research is complete) */}
-        {researchStatus === 'ready' && hooks.length > 0 && (
-          <div className="mt-12 border-t border-foreground pt-8">
-            <HookPicker
-              hooks={hooks}
-              selectedHook={selectedHook}
-              onSelectHook={handleHookSelect}
-            />
-          </div>
-        )}
-
-        {/* Progress during email generation */}
-        {researchStatus === 'generating' && (
+        {/* Progress during email generation (only for old flow) */}
+        {wizardStep === 0 && researchStatus === 'generating' && (
           <div className="mt-12 border-t border-foreground pt-8">
             <div className="space-y-4 py-8 text-center">
               <div className="font-serif text-xl font-medium">
@@ -311,7 +512,11 @@ const Index = () => {
             {researchDebug.counts && (
               <div className="mb-4 p-3 bg-background/50 rounded border border-border">
                 <h4 className="font-mono text-xs font-semibold mb-2">Counts:</h4>
-                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                <div className="grid grid-cols-3 gap-2 text-xs font-mono">
+                  <div>
+                    <span className="text-muted-foreground">Hypotheses: </span>
+                    <span className="font-semibold">{researchDebug.counts.hypotheses || 0}</span>
+                  </div>
                   <div>
                     <span className="text-muted-foreground">URLs: </span>
                     <span className="font-semibold">{researchDebug.counts.urls}</span>
@@ -320,6 +525,37 @@ const Index = () => {
                     <span className="text-muted-foreground">Hooks: </span>
                     <span className="font-semibold">{researchDebug.counts.hooks}</span>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* Timing */}
+            {researchDebug.duration_sec && (
+              <div className="mb-4 p-3 bg-background/50 rounded border border-border">
+                <h4 className="font-mono text-xs font-semibold mb-2">Timing:</h4>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div>
+                    <span className="text-muted-foreground">Duration: </span>
+                    <span className="font-semibold">{researchDebug.duration_sec}s</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Completed: </span>
+                    <span className="font-semibold">{new Date(researchDebug.completed_at).toLocaleTimeString()}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Hypotheses */}
+            {researchDebug.hypotheses && researchDebug.hypotheses.length > 0 && (
+              <div className="mb-4">
+                <h4 className="font-mono text-xs font-semibold mb-2">Search Hypotheses ({researchDebug.hypotheses.length}):</h4>
+                <div className="space-y-1">
+                  {researchDebug.hypotheses.map((hypothesis: string, idx: number) => (
+                    <div key={idx} className="text-xs font-mono p-2 bg-background/50 rounded border border-border">
+                      {idx + 1}. {hypothesis}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -366,13 +602,6 @@ const Index = () => {
                 {JSON.stringify(researchDebug, null, 2)}
               </pre>
             </details>
-          </div>
-        )}
-
-        {/* Results (shown after email generation complete) */}
-        {result && !isLoading && (
-          <div className="mt-12 border-t border-foreground pt-8">
-            <EmailResult result={result} />
           </div>
         )}
 
