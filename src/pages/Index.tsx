@@ -21,6 +21,9 @@ const Index = () => {
   const [selectedHook, setSelectedHook] = useState<any | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Debug: Real-time research progress
+  const [researchDebug, setResearchDebug] = useState<any>(null);
+
   // NEW: Poll research status
   useEffect(() => {
     if (!requestId || researchStatus !== 'researching') {
@@ -53,6 +56,21 @@ const Index = () => {
         const data = await response.json();
         console.log('Research status:', data.status, 'Hooks:', data.counts.hooks);
 
+        // Update debug info with full research state
+        setResearchDebug({
+          requestId: data.requestId,
+          status: data.status,
+          phaseLabel: data.phaseLabel,
+          progress: data.progress,
+          counts: data.counts,
+          urls: data.urls,
+          hooks: data.hooks,
+          partial: data.partial,
+          fallback_mode: data.fallback_mode,
+          error: data.error,
+          updated_at: data.updated_at,
+        });
+
         if (data.status === 'complete') {
           setHooks(data.hooks || []);
           setResearchStatus('ready');
@@ -62,7 +80,7 @@ const Index = () => {
             pollIntervalRef.current = null;
           }
         } else if (data.status === 'failed') {
-          toast.error('Research failed. Please try again.');
+          toast.error(data.error || 'Research failed. Please try again.');
           setResearchStatus('idle');
           setIsLoading(false);
           if (pollIntervalRef.current) {
@@ -148,6 +166,7 @@ const Index = () => {
     setResult(null);
     setDebugTrace(null);
     setDebugData(null);
+    setResearchDebug(null); // Clear previous research debug
     setCurrentRequest(request);
     setHooks([]);
     setSelectedHook(null);
@@ -248,6 +267,105 @@ const Index = () => {
                 Using your selected hook to craft a personalized message
               </p>
             </div>
+          </div>
+        )}
+
+        {/* Research Debug (shown in debug mode during/after research) */}
+        {researchDebug && currentRequest?.includeDebug && (
+          <div className="mt-8 border-2 border-purple-500/50 rounded p-4 bg-purple-50/10">
+            <h3 className="font-mono text-sm font-bold mb-3 text-purple-600 dark:text-purple-400">
+              🔬 Research Pipeline Debug
+            </h3>
+
+            {/* Current Status */}
+            <div className="mb-4 p-3 bg-background/50 rounded border border-border">
+              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                <div>
+                  <span className="text-muted-foreground">Status: </span>
+                  <span className={`font-semibold ${
+                    researchDebug.status === 'complete' ? 'text-green-600' :
+                    researchDebug.status === 'failed' ? 'text-red-600' :
+                    'text-blue-600'
+                  }`}>{researchDebug.status}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Phase: </span>
+                  <span className="font-semibold">{researchDebug.phaseLabel}</span>
+                </div>
+                {researchDebug.progress && (
+                  <>
+                    <div>
+                      <span className="text-muted-foreground">Progress: </span>
+                      <span className="font-semibold">{researchDebug.progress.phase}/{researchDebug.progress.total}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Fallback: </span>
+                      <span className="font-semibold">{researchDebug.fallback_mode}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Counts */}
+            {researchDebug.counts && (
+              <div className="mb-4 p-3 bg-background/50 rounded border border-border">
+                <h4 className="font-mono text-xs font-semibold mb-2">Counts:</h4>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div>
+                    <span className="text-muted-foreground">URLs: </span>
+                    <span className="font-semibold">{researchDebug.counts.urls}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Hooks: </span>
+                    <span className="font-semibold">{researchDebug.counts.hooks}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Error */}
+            {researchDebug.error && (
+              <div className="mb-4 p-3 bg-red-50/10 border border-red-500/30 rounded">
+                <h4 className="font-mono text-xs font-semibold mb-2 text-red-600 dark:text-red-400">
+                  Error:
+                </h4>
+                <div className="text-xs text-red-500">
+                  {researchDebug.error}
+                </div>
+              </div>
+            )}
+
+            {/* URLs Found */}
+            {researchDebug.urls && researchDebug.urls.length > 0 && (
+              <div className="mb-4">
+                <h4 className="font-mono text-xs font-semibold mb-2">URLs Found ({researchDebug.urls.length}):</h4>
+                <div className="space-y-1">
+                  {researchDebug.urls.slice(0, 5).map((url: any, idx: number) => (
+                    <div key={idx} className="text-xs font-mono p-2 bg-background/50 rounded border border-border">
+                      <a href={url.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline break-all">
+                        {url.title || url.url}
+                      </a>
+                    </div>
+                  ))}
+                  {researchDebug.urls.length > 5 && (
+                    <div className="text-xs text-muted-foreground">
+                      ... and {researchDebug.urls.length - 5} more
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Full JSON */}
+            <details className="mt-4">
+              <summary className="cursor-pointer text-xs font-mono text-muted-foreground hover:text-foreground">
+                View Full Research State JSON
+              </summary>
+              <pre className="mt-2 p-3 bg-background/80 rounded border border-border text-xs overflow-x-auto">
+                {JSON.stringify(researchDebug, null, 2)}
+              </pre>
+            </details>
           </div>
         )}
 
