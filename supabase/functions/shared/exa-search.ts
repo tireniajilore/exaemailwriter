@@ -30,6 +30,8 @@ export interface HookPack {
   hook: string;
   whyItWorks: string;
   confidence: number;
+  strength?: 'tier1' | 'tier2' | 'tier3';
+  weaknessNote?: string;
   sources: Array<{ label: string; url: string }>;
   evidenceQuotes?: Array<{ label: string; quote: string }>;
 }
@@ -697,12 +699,25 @@ Important rules:
 - Do NOT infer opinions or intentions without evidence.
 - Do NOT include generic company or industry descriptions unless clearly connected to the person.
 
-Acceptable signals include (non-exhaustive):
-- Evidence of role, responsibilities, or team membership
-- Career transitions or professional trajectory
-- Public participation in discussions, forums, or discourse
-- Association with initiatives, domains, or functions
-- Documented context that helps explain what the person works on or cares about
+DEGRADATION LADDER (you MUST return at least 1 hook):
+
+Tier 1 — Intent-aligned hooks (preferred):
+- Directly matches sender's intent
+- Evidence-grounded
+- Confidence: 0.7–1.0
+
+Tier 2 — Adjacent hooks (if Tier 1 yields 0):
+- About recipient's background, leadership, domain, or public work
+- Loosely adjacent to sender intent
+- Evidence-grounded
+- Confidence: 0.35–0.65
+
+Tier 3 — Identity/role hooks (if Tier 2 yields 0):
+- What they do, their remit, or notable "about" facts
+- Evidence-grounded
+- Confidence: 0.15–0.35
+
+You MUST return at least 1 hook. If you cannot find Tier 1, use Tier 2. If you cannot find Tier 2, use Tier 3.
 
 Unacceptable signals:
 - Pure speculation
@@ -710,14 +725,13 @@ Unacceptable signals:
 - Industry trends not tied to the person
 - Assumptions without source evidence
 
-If NO valid hooks exist, return an empty array.
-
 Output requirements:
 - Return VALID JSON ONLY
 - No explanations
 - No markdown
 - No prose before or after JSON
 - Always return an object with a "hooks" array
+- evidenceQuotes is REQUIRED for all hooks
 
 Required output format:
 {
@@ -728,6 +742,8 @@ Required output format:
       "hook": "...",
       "whyItWorks": "...",
       "confidence": 0.85,
+      "strength": "tier1" | "tier2" | "tier3",
+      "weaknessNote": "Optional explanation if confidence < 0.5",
       "sources": [{"label": "Source 1", "url": "..."}],
       "evidenceQuotes": [{"label": "Source 1", "quote": "verbatim text"}]
     }
