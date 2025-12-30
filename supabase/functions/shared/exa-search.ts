@@ -763,7 +763,7 @@ Unacceptable signals:
 - Assumptions without source evidence
 
 Output requirements:
-- Return VALID JSON ONLY (raw JSON, no code fences, no ```json blocks)
+- Return VALID JSON ONLY (raw JSON, no code fences, no backtick blocks)
 - No explanations, no markdown, no formatting
 - Start response immediately with {
 - No prose before or after JSON
