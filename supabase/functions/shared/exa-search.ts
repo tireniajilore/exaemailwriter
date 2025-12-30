@@ -116,8 +116,9 @@ async function generateSearchHypotheses(params: {
   senderIntent?: string;
   credibilityStory?: string;
   geminiApiKey: string;
+  identityConfidence?: number;
 }): Promise<string[]> {
-  const { name, company, role, senderIntent, credibilityStory, geminiApiKey } = params;
+  const { name, company, role, senderIntent, credibilityStory, geminiApiKey, identityConfidence } = params;
 
   if (!senderIntent) {
     // Fall back to basic searches if we don't have sender's intent
@@ -154,6 +155,8 @@ Role: ${role || "N/A"}
 Sender's Intent:
 ${senderIntent}
 
+Each query must remain clearly relevant to the sender's intent theme, even while staying neutral and discovery-oriented.
+
 ---
 
 TASK
@@ -185,7 +188,7 @@ Generate the queries in this order:
 CONSTRAINTS
 
 - Each query MUST include ${name}.
-- Include ${company} ONLY if it helps narrow the search.
+- Include ${company} ONLY if it helps narrow the search.${company && identityConfidence !== undefined && identityConfidence < 0.85 ? `\n- Because the recipient's name may be ambiguous, include the company name in all queries.` : ''}
 - Queries should be 8–16 words.
 - Use content-type nouns when appropriate (e.g. interview, podcast, talk, essay).
 - Avoid claims, outreach language, or resume-style wording.
@@ -354,8 +357,9 @@ export async function discoverContent(params: {
   credibilityStory?: string;
   exaApiKey: string;
   geminiApiKey: string;
+  identityConfidence?: number;
 }): Promise<ContentDiscoveryResult> {
-  const { name, company, role, senderIntent, credibilityStory, exaApiKey, geminiApiKey } = params;
+  const { name, company, role, senderIntent, credibilityStory, exaApiKey, geminiApiKey, identityConfidence } = params;
 
   console.log(`[discoverContent] Starting discovery for ${name} at ${company}`);
 
@@ -366,7 +370,8 @@ export async function discoverContent(params: {
     role,
     senderIntent,
     credibilityStory,
-    geminiApiKey
+    geminiApiKey,
+    identityConfidence
   });
 
   const searches = hypotheses.map((query, i) => ({
@@ -447,19 +452,26 @@ function extractIntentKeywords(senderIntent: string): string[] {
   text = text.replace(/[^\w\s]/g, ' '); // Replace punctuation with spaces
   text = text.replace(/\s+/g, ' ').trim(); // Collapse whitespace
 
-  // 2. Strip boilerplate phrases
+  // 2. Strip boilerplate phrases (do this BEFORE tokenization)
   const boilerplatePhrases = [
     // Outreach boilerplate
-    "i'm reaching out", "reaching out", "reach out",
-    "would love to", "love to", "hoping to",
+    "i m reaching out", "reaching out", "reach out to", "reach out",
+    "would love to", "love to", "hoping to", "hope to",
     "quick chat", "quick call", "grab time",
-    "i wanted to", "i'm interested in", "i'm curious about",
-    "see if you", "open to", "wondering if",
-    "learn more", "hear about", "your thoughts on",
+    "i wanted to", "i want to", "want to invite", "want him to", "want her to",
+    "invite him to", "invite her to", "invite them to", "invite you to",
+    "invite him", "invite her",
+    "i m interested in", "i m curious about",
+    "see if you", "see if he", "see if she",
+    "open to", "wondering if",
+    "learn more", "hear about", "hear more", "your thoughts on",
 
     // Event logistics
-    "as an mba student", "i'm an mba student",
-    "invite you to", "join us", "fireside chat"
+    "as an mba student", "i m an mba student",
+    "join us", "fireside chat",
+    "speak at", "speaking at", "speak at the", "at the", "to the",
+    "come speak", "come and speak",
+    "for the"
   ];
 
   for (const phrase of boilerplatePhrases) {
@@ -523,19 +535,26 @@ function buildHighlightsQuery(senderIntent: string): string {
   text = text.replace(/[^\w\s]/g, ' '); // Replace punctuation with spaces
   text = text.replace(/\s+/g, ' ').trim(); // Collapse whitespace
 
-  // 2. Strip boilerplate phrases
+  // 2. Strip boilerplate phrases (do this BEFORE tokenization)
   const boilerplatePhrases = [
     // Outreach boilerplate
-    "i'm reaching out", "reaching out", "reach out",
-    "would love to", "love to", "hoping to",
+    "i m reaching out", "reaching out", "reach out to", "reach out",
+    "would love to", "love to", "hoping to", "hope to",
     "quick chat", "quick call", "grab time",
-    "i wanted to", "i'm interested in", "i'm curious about",
-    "see if you", "open to", "wondering if",
-    "learn more", "hear about", "your thoughts on",
+    "i wanted to", "i want to", "want to invite", "want him to", "want her to",
+    "invite him to", "invite her to", "invite them to", "invite you to",
+    "invite him", "invite her",
+    "i m interested in", "i m curious about",
+    "see if you", "see if he", "see if she",
+    "open to", "wondering if",
+    "learn more", "hear about", "hear more", "your thoughts on",
 
     // Event logistics
-    "as an mba student", "i'm an mba student",
-    "invite you to", "join us", "fireside chat"
+    "as an mba student", "i m an mba student",
+    "join us", "fireside chat",
+    "speak at", "speaking at", "speak at the", "at the", "to the",
+    "come speak", "come and speak",
+    "for the"
   ];
 
   for (const phrase of boilerplatePhrases) {

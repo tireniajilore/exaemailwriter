@@ -167,7 +167,8 @@ serve(async (req) => {
         senderIntent,
         credibilityStory,
         exaApiKey,
-        geminiApiKey
+        geminiApiKey,
+        identityConfidence: identityResult.confidence
       });
 
       console.log(`[research-run] Discovered ${discoveryResult.foundCount} sources`);

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { Loader2 } from 'lucide-react';
 import { ResearchProgressEnhanced } from '@/components/ResearchProgressEnhanced';
 import { HookExplorer } from '@/components/HookExplorer';
 import { CredibilityRefiner } from '@/components/CredibilityRefiner';
@@ -7,9 +8,10 @@ import { StepIndicator } from '@/components/StepIndicator';
 import { IntentForm, type IntentFormData } from '@/components/IntentForm';
 import { supabase } from '@/integrations/supabase/client';
 import type { EmailRequest, EmailResponse } from '@/lib/prompt';
-import type { WizardStep, ResearchPhase } from '@/types/wizard';
+import type { WizardStep } from '@/types/wizard';
 import { WIZARD_STEPS } from '@/types/wizard';
 import { toast } from 'sonner';
+import { ResearchEmailForm } from '@/components/ResearchEmailForm';
 
 const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -20,7 +22,6 @@ const Index = () => {
 
   // Wizard state
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
-  const [researchPhase, setResearchPhase] = useState<ResearchPhase>('pending');
   const [intentData, setIntentData] = useState<IntentFormData | null>(null);
 
   // NEW: Research jobs state
@@ -89,7 +90,6 @@ const Index = () => {
         if (data.status === 'complete') {
           setHooks(data.hooks || []);
           setResearchStatus('ready');
-          setResearchPhase('complete'); // Update wizard research phase
           setIsLoading(false); // Stop showing loading state when hooks are ready
           if (pollIntervalRef.current) {
             clearInterval(pollIntervalRef.current);
@@ -98,7 +98,6 @@ const Index = () => {
         } else if (data.status === 'failed') {
           toast.error(data.error || 'Research failed. Please try again.');
           setResearchStatus('idle');
-          setResearchPhase('pending');
           setWizardStep(1); // Go back to step 1 on failure
           setIsLoading(false);
           if (pollIntervalRef.current) {
@@ -214,7 +213,7 @@ const Index = () => {
   // NEW: Start over (Step 4 → Step 1)
   const handleStartOver = () => {
     setWizardStep(1);
-    setResearchPhase('pending');
+    setResearchStatus('idle');
     setIntentData(null);
     setRequestId(null);
     setHooks([]);
@@ -287,7 +286,6 @@ const Index = () => {
 
     // Move to step 2 and start research
     setWizardStep(2);
-    setResearchPhase('active');
 
     try {
       const { data: researchData, error } = await supabase.functions.invoke('research', {
@@ -305,7 +303,7 @@ const Index = () => {
         toast.error('Failed to start research. Please try again.');
         setIsLoading(false);
         setWizardStep(1);
-        setResearchPhase('pending');
+        setResearchStatus('idle');
         return;
       }
 
@@ -314,7 +312,7 @@ const Index = () => {
         toast.error(researchData.error);
         setIsLoading(false);
         setWizardStep(1);
-        setResearchPhase('pending');
+        setResearchStatus('idle');
         return;
       }
 
@@ -326,7 +324,7 @@ const Index = () => {
       toast.error('Something went wrong. Please try again.');
       setIsLoading(false);
       setWizardStep(1);
-      setResearchPhase('pending');
+      setResearchStatus('idle');
     }
   };
 
@@ -390,7 +388,7 @@ const Index = () => {
           )}
 
           {/* Step 2: Research Progress (active phase) */}
-          {wizardStep === 2 && researchPhase === 'active' && intentData && (
+          {wizardStep === 2 && researchStatus === 'researching' && intentData && (
             <div className="border-t border-foreground pt-8">
               <ResearchProgressEnhanced
                 recipientName={intentData.recipientName}
@@ -405,7 +403,7 @@ const Index = () => {
           )}
 
           {/* Step 2: Hook Selection (complete phase) */}
-          {wizardStep === 2 && researchPhase === 'complete' && (
+          {wizardStep === 2 && researchStatus === 'ready' && (
             <div className="border-t border-foreground pt-8">
               <HookExplorer
                 hooks={hooks}
@@ -426,6 +424,23 @@ const Index = () => {
                 onSubmit={handleCredibilitySubmit}
                 isLoading={isLoading}
               />
+            </div>
+          )}
+
+          {/* Step 4: Email Generation Loading */}
+          {wizardStep === 4 && !result && isLoading && (
+            <div className="border-t border-foreground pt-8">
+              <div className="space-y-6 py-6 max-w-2xl mx-auto">
+                <div className="space-y-2">
+                  <h2 className="font-serif text-3xl tracking-tight">Writing your email</h2>
+                  <p className="text-base text-muted-foreground leading-relaxed">
+                    Crafting a message that's short, specific, and grounded in real context
+                  </p>
+                </div>
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                </div>
+              </div>
             </div>
           )}
 
