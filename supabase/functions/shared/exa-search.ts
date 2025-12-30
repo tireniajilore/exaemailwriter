@@ -581,6 +581,7 @@ Output (3-7 words only):`;
           generationConfig: {
             temperature: 0.2,
             maxOutputTokens: 128,
+            thinkingBudget: 0, // Disable thinking tokens for deterministic extraction
           },
         }),
       }
@@ -762,9 +763,9 @@ Unacceptable signals:
 - Assumptions without source evidence
 
 Output requirements:
-- Return VALID JSON ONLY
-- No explanations
-- No markdown
+- Return VALID JSON ONLY (raw JSON, no code fences, no ```json blocks)
+- No explanations, no markdown, no formatting
+- Start response immediately with {
 - No prose before or after JSON
 - Return exactly 3 hooks (or fewer if content insufficient)
 - evidenceQuotes is REQUIRED for all hooks
@@ -808,6 +809,7 @@ Required output format:
           generationConfig: {
             temperature: 0.3,
             maxOutputTokens: 4000, // Increased for stability padding
+            thinkingBudget: 0, // Disable thinking tokens - prevents hidden token consumption
           }
         })
       }
@@ -845,15 +847,21 @@ Required output format:
       console.log(`[extractHooks] Stripped code fence, cleaned length: ${cleanedText.length} chars`);
     }
 
-    // Parser guard: early exit if no JSON structure AFTER code fence stripping
-    if (!cleanedText.includes('{') || !cleanedText.includes('}')) {
-      console.error(`[extractHooks] Parser guard: no JSON braces found in cleaned text`);
+    // Parser guard: early exit if no JSON structure at all
+    if (!cleanedText.includes('{')) {
+      console.error(`[extractHooks] Parser guard: no opening brace found in cleaned text`);
       return {
         hooks: [],
         fallback_mode: 'extraction_failed',
         fallback_used: false,
         fallback_reason: 'parser_guard'
       };
+    }
+
+    // If we have opening brace but no closing, try to repair (handle truncation)
+    const hasClosingBrace = cleanedText.includes('}');
+    if (!hasClosingBrace) {
+      console.warn(`[extractHooks] No closing brace found - likely truncation. Will attempt repair.`);
     }
 
     // Strategy 2: Find first complete JSON object with balanced braces (MOST RELIABLE)
@@ -908,6 +916,74 @@ Required output format:
         }
       } else {
         console.error(`[extractHooks] Could not find balanced braces. firstBrace=${firstBrace}, cleanedText length=${cleanedText.length}`);
+
+        // REPAIR ATTEMPT: Try to close incomplete JSON structure
+        if (!hasClosingBrace && cleanedText.includes('"hooks"')) {
+          console.warn(`[extractHooks] Attempting to repair truncated JSON by closing structures`);
+
+          let repaired = cleanedText.trim();
+
+          // If we're in the middle of a string, close it
+          const openQuotes = (repaired.match(/"/g) || []).length;
+          if (openQuotes % 2 !== 0) {
+            repaired += '"';
+            console.log(`[extractHooks] Repair: Added closing quote`);
+          }
+
+          // Close any open objects/arrays
+          // Count open braces/brackets
+          let braceDepth = 0;
+          let bracketDepth = 0;
+          let inString = false;
+          let escapeNext = false;
+
+          for (let i = 0; i < repaired.length; i++) {
+            const char = repaired[i];
+
+            if (escapeNext) {
+              escapeNext = false;
+              continue;
+            }
+
+            if (char === '\\') {
+              escapeNext = true;
+              continue;
+            }
+
+            if (char === '"') {
+              inString = !inString;
+              continue;
+            }
+
+            if (!inString) {
+              if (char === '{') braceDepth++;
+              if (char === '}') braceDepth--;
+              if (char === '[') bracketDepth++;
+              if (char === ']') bracketDepth--;
+            }
+          }
+
+          // Close brackets and braces
+          while (bracketDepth > 0) {
+            repaired += ']';
+            bracketDepth--;
+          }
+          while (braceDepth > 0) {
+            repaired += '}';
+            braceDepth--;
+          }
+
+          console.log(`[extractHooks] Repair: Added ${(repaired.length - cleanedText.trim().length)} closing chars`);
+          console.log(`[extractHooks] Repaired JSON (first 500 chars):`, repaired.substring(0, 500));
+
+          // Try to parse repaired JSON
+          try {
+            parsed = JSON.parse(repaired);
+            console.log(`[extractHooks] Repair successful! Parsed object has keys:`, Object.keys(parsed));
+          } catch (e) {
+            console.error(`[extractHooks] Repair failed:`, e);
+          }
+        }
       }
     }
 
@@ -1073,6 +1149,7 @@ Required output format:
             generationConfig: {
               temperature: 0.2,
               maxOutputTokens: 5000, // Increased for fallback stability
+              thinkingBudget: 0, // Disable thinking tokens - prevents hidden token consumption
             }
           })
         }

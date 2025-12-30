@@ -62,9 +62,9 @@ CRITICAL CONSTRAINTS:
 - You MUST return at least 1 hook
 
 Output requirements:
-- Return VALID JSON ONLY
-- No explanations
-- No markdown
+- Return VALID JSON ONLY (raw JSON, no code fences, no ```json blocks)
+- No explanations, no markdown, no formatting
+- Start response immediately with {
 - No prose before or after JSON
 - Return exactly 3 hooks (or fewer if content insufficient)
 - evidenceQuotes is REQUIRED for all hooks
