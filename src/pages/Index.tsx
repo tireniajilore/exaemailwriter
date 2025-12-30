@@ -286,6 +286,7 @@ const Index = () => {
 
     // Move to step 2 and start research
     setWizardStep(2);
+    setResearchStatus('researching'); // Set status BEFORE async call so polling starts
 
     try {
       const { data: researchData, error } = await supabase.functions.invoke('research', {
@@ -318,7 +319,6 @@ const Index = () => {
 
       console.log('Research started:', researchData.requestId);
       setRequestId(researchData.requestId);
-      setResearchStatus('researching');
     } catch (err) {
       console.error('Error starting research:', err);
       toast.error('Something went wrong. Please try again.');
