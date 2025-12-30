@@ -1622,11 +1622,12 @@ Return JSON only:
 
       // Trace: email generation start
       const topHookPack = researchResult?.hookPacks?.[0];
+      const hasHooks = selectedHook || topHookPack;
       trace.push({
         stage: "email_generation_start",
-        decision: topHookPack ? "using_primary_hook_pack" : "no_hooks_available",
+        decision: selectedHook ? "using_selected_hook" : topHookPack ? "using_primary_hook_pack" : "no_hooks_available",
         counts: {
-          hook_packs_available: researchResult?.hookPacks.length || 0,
+          hook_packs_available: selectedHook ? 1 : (researchResult?.hookPacks.length || 0),
         },
       });
 
@@ -1720,7 +1721,11 @@ Return JSON only:
 
     // Log analytics
     console.log(`=== GENERATION ANALYTICS === generation_id=${generationId}`);
-    console.log(`hook_packs: ${researchResult?.hookPacks.length || 0}`);
+
+    // Calculate hook_packs count correctly for both flows
+    const hookPacksCount = selectedHook ? 1 : (researchResult?.hookPacks.length || 0);
+
+    console.log(`hook_packs: ${hookPacksCount}`);
     console.log(`intent_profile: ${researchResult?.senderIntentProfile?.primary_theme || "none"}`);
     console.log(`exa_research_id: ${researchResult?.exaResearchId || "none"}`);
     console.log(`exa_research_latency_ms: ${researchResult?.exaResearchLatencyMs || 0}`);
@@ -1733,6 +1738,13 @@ Return JSON only:
     console.log(`validator_passed: ${validation.valid}`);
     console.log(`latency_ms: ${latencyMs}`);
     console.log(`deploy_version: ${DEPLOY_VERSION}`);
+
+    // Log selectedHook info if present
+    if (selectedHook) {
+      console.log(`selected_hook_title: ${selectedHook.title}`);
+      console.log(`selected_hook_confidence: ${selectedHook.confidence}`);
+    }
+
     console.log(`============================`);
 
     // Log to database

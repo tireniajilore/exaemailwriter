@@ -48,7 +48,24 @@ serve(async (req) => {
     const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
 
     if (!exaApiKey || !geminiApiKey) {
-      console.error('[research-run] Missing API keys');
+      console.error('[research-run] Missing API keys - EXA:', !!exaApiKey, 'GEMINI:', !!geminiApiKey);
+
+      // Update job to failed status
+      const supabaseClient = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      );
+
+      await supabaseClient
+        .from('research_jobs')
+        .update({
+          status: 'failed',
+          error: 'Server configuration error: Missing API keys',
+          partial: false,
+          fallback_mode: 'failed'
+        })
+        .eq('id', requestId);
+
       return new Response(
         JSON.stringify({ error: 'Server configuration error: Missing API keys' }),
         {

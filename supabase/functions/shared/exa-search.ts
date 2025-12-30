@@ -9,6 +9,7 @@ export interface IdentityResult {
 export interface ContentDiscoveryResult {
   urls: Array<{ id: string; url: string; title: string; score: number }>;
   foundCount: number;
+  hypotheses?: string[];
 }
 
 export interface FetchedDocument {
@@ -118,8 +119,8 @@ async function generateSearchHypotheses(params: {
 }): Promise<string[]> {
   const { name, company, role, senderIntent, credibilityStory, geminiApiKey } = params;
 
-  if (!senderIntent || !credibilityStory) {
-    // Fall back to basic searches if we don't have the context
+  if (!senderIntent) {
+    // Fall back to basic searches if we don't have sender's intent
     return [
       `${name} ${company} ${role ?? ''} projects background`,
       `${name} ${company} recent work`,
@@ -127,28 +128,82 @@ async function generateSearchHypotheses(params: {
     ];
   }
 
-  const prompt = `You are helping craft targeted research queries for a cold email to ${name} at ${company}${role ? ` (${role})` : ''}.
+  const prompt = `You are generating search queries for Exa, a neural semantic search engine.
 
-SENDER'S INTENT:
+IMPORTANT CONTEXT ABOUT EXA:
+Exa works best when queries describe the KIND OF DOCUMENT you want to find,
+not when they ask questions or make claims.
+
+Good Exa queries:
+- Read like descriptions of articles, interviews, talks, or essays
+- Combine: ENTITY + CONTENT TYPE + THEME
+- Are neutral and discovery-oriented (do not assert facts)
+
+Bad Exa queries:
+- Resume bullets or invented claims (e.g. "led X", "built Y")
+- Outreach or email language ("I'm reaching out", "would like to")
+- Vague domain-only phrases with no entity anchor
+- Career summaries ("background", "experience", "profile")
+
+---
+
+Recipient: ${name}
+Company: ${company}
+Role: ${role || "N/A"}
+
+Sender's Intent:
 ${senderIntent}
 
-SENDER'S CREDIBILITY STORY:
-${credibilityStory}
+---
 
-TASK: Generate 3 specific search hypotheses about what aspects of ${name}'s work would be most relevant to the sender's intent.
+TASK
 
-Think about:
-1. What shared interests, challenges, or domains exist between sender and recipient?
-2. What specific projects, initiatives, or topics has ${name} likely worked on that align with the sender's intent?
-3. What unique angles could create a strong connection?
+Generate EXACTLY 3 Exa search queries.
 
-Return ONLY a JSON array of 3 search query strings (no explanations):
-["search query 1", "search query 2", "search query 3"]
+Each query must target a DIFFERENT TYPE of PUBLICLY VERIFIABLE SIGNAL.
+You are searching for evidence that MAY exist — do NOT assume anything is true.
 
-Each query should combine ${name}'s name, company, and a specific topic/hypothesis.
+Generate the queries in this order:
 
-Example format:
-["Jane Smith Stripe building payment infrastructure emerging markets", "Jane Smith Stripe scaling fintech teams", "Jane Smith engineering leadership financial inclusion"]`;
+1) PUBLIC VOICE
+   A query that could surface interviews, podcasts, talks, panels, essays,
+   or other first-person public commentary by ${name}.
+   (Do not reference specific quotes or opinions.)
+
+2) PROFESSIONAL WORK / COMPANY CONTEXT
+   A query that could surface initiatives, programs, strategies, or areas of
+   work associated with ${name}'s role or company.
+   (Do not claim ownership or leadership.)
+
+3) CAREER FACTS / TRANSITIONS
+   A query that could surface factual career history or role transitions
+   involving ${name}.
+   (Do not speculate on motivations.)
+
+---
+
+CONSTRAINTS
+
+- Each query MUST include ${name}.
+- Include ${company} ONLY if it helps narrow the search.
+- Queries should be 8–16 words.
+- Use content-type nouns when appropriate (e.g. interview, podcast, talk, essay).
+- Avoid claims, outreach language, or resume-style wording.
+- The three queries must not be near-duplicates.
+
+---
+
+OUTPUT FORMAT
+
+Return ONLY a JSON array of 3 strings, in the same order as above.
+No explanations. No markdown. No extra text.
+
+Example output format:
+[
+  "search query 1",
+  "search query 2",
+  "search query 3"
+]`;
 
   try {
     const response = await fetch(
@@ -164,7 +219,7 @@ Example format:
           }],
           generationConfig: {
             temperature: 0.7,
-            maxOutputTokens: 512,
+            maxOutputTokens: 2048,
           }
         })
       }
@@ -180,20 +235,93 @@ Example format:
     }
 
     const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 
-    // Extract JSON array from response
-    const jsonMatch = text.match(/\[[\s\S]*?\]/);
-    if (!jsonMatch) {
-      console.error(`[generateSearchHypotheses] No JSON array found`);
+    // CRITICAL FIX: Concatenate ALL parts, not just the first one
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const text = parts.map((part: any) => part.text ?? '').join('');
+    const finishReason = data.candidates?.[0]?.finishReason ?? 'UNKNOWN';
+
+    console.log(`[generateSearchHypotheses] Gemini returned ${parts.length} parts, total length: ${text.length} chars`);
+    console.log(`[generateSearchHypotheses] Gemini finishReason: ${finishReason}`);
+
+    // CRITICAL FIX: Proper JSON array extraction with balanced bracket matching
+    let hypotheses;
+
+    // Strategy 1: Find first complete JSON array with balanced brackets (MOST RELIABLE)
+    // Do this FIRST because Gemini often returns raw JSON without code blocks
+    const firstBracket = text.indexOf('[');
+    if (firstBracket !== -1) {
+      let depth = 0;
+      let endPos = -1;
+      let inString = false;
+      let escapeNext = false;
+
+      for (let i = firstBracket; i < text.length; i++) {
+        const char = text[i];
+
+        if (escapeNext) {
+          escapeNext = false;
+          continue;
+        }
+
+        if (char === '\\') {
+          escapeNext = true;
+          continue;
+        }
+
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+
+        if (!inString) {
+          if (char === '[') depth++;
+          if (char === ']') {
+            depth--;
+            if (depth === 0) {
+              endPos = i;
+              break;
+            }
+          }
+        }
+      }
+
+      if (endPos !== -1) {
+        const jsonStr = text.substring(firstBracket, endPos + 1);
+        console.log(`[generateSearchHypotheses] Extracted JSON array (balanced brackets): ${jsonStr.length} chars`);
+        try {
+          hypotheses = JSON.parse(jsonStr);
+        } catch (e) {
+          console.error(`[generateSearchHypotheses] Balanced JSON parse failed:`, e);
+          console.error(`[generateSearchHypotheses] Attempted JSON:`, jsonStr.substring(0, 300));
+        }
+      }
+    }
+
+    // Strategy 2: Try ```json code block as fallback
+    if (!hypotheses) {
+      const codeBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        console.log(`[generateSearchHypotheses] Found JSON in code block`);
+        const content = codeBlockMatch[1].trim();
+        if (content.startsWith('[')) {
+          try {
+            hypotheses = JSON.parse(content);
+          } catch (e) {
+            console.error(`[generateSearchHypotheses] Code block JSON parse failed:`, e);
+          }
+        }
+      }
+    }
+
+    if (!hypotheses) {
+      console.error(`[generateSearchHypotheses] No valid JSON array found. First 300 chars:`, text.substring(0, 300));
       return [
         `${name} ${company} ${role ?? ''} projects`,
         `${name} ${company} recent work`,
         `${name} ${company} leadership`
       ];
     }
-
-    const hypotheses = JSON.parse(jsonMatch[0]);
 
     if (!Array.isArray(hypotheses) || hypotheses.length === 0) {
       console.error(`[generateSearchHypotheses] Invalid hypotheses format`);
@@ -299,15 +427,183 @@ export async function discoverContent(params: {
 
     return {
       urls: topResults,
-      foundCount: uniqueResults.length
+      foundCount: uniqueResults.length,
+      hypotheses
     };
   } catch (error) {
     console.error(`[discoverContent] Error:`, error);
     return {
       urls: [],
-      foundCount: 0
+      foundCount: 0,
+      hypotheses: []
     };
   }
+}
+
+// Extract top 6-10 intent keywords from sender intent
+function extractIntentKeywords(senderIntent: string): string[] {
+  // 1. Normalize
+  let text = senderIntent.toLowerCase();
+  text = text.replace(/[^\w\s]/g, ' '); // Replace punctuation with spaces
+  text = text.replace(/\s+/g, ' ').trim(); // Collapse whitespace
+
+  // 2. Strip boilerplate phrases
+  const boilerplatePhrases = [
+    // Outreach boilerplate
+    "i'm reaching out", "reaching out", "reach out",
+    "would love to", "love to", "hoping to",
+    "quick chat", "quick call", "grab time",
+    "i wanted to", "i'm interested in", "i'm curious about",
+    "see if you", "open to", "wondering if",
+    "learn more", "hear about", "your thoughts on",
+
+    // Event logistics
+    "as an mba student", "i'm an mba student",
+    "invite you to", "join us", "fireside chat"
+  ];
+
+  for (const phrase of boilerplatePhrases) {
+    text = text.replace(new RegExp(phrase, 'g'), ' ');
+  }
+
+  text = text.replace(/\s+/g, ' ').trim();
+
+  // 3. Tokenize and remove stopwords
+  const stopwords = new Set([
+    "the", "a", "an", "and", "or", "to", "of", "in", "for", "on", "with", "about", "from",
+    "that", "this", "it", "is", "are", "be", "been", "being", "as", "at", "by", "into",
+    "over", "under", "than", "then", "just", "around"
+  ]);
+
+  // 4. Drop low-signal verbs & filler words
+  const lowSignalVerbs = new Set([
+    // Outreach boilerplate
+    "reach", "reaching", "chat", "call", "connect", "learn", "hear", "discuss",
+    "talk", "share", "help", "looking",
+
+    // Event logistics
+    "speak", "speaker", "come", "quick",
+
+    // Filler verbs
+    "like", "would", "could", "should", "want", "wanted", "make", "getting"
+  ]);
+
+  // 5. Filter low-value tokens
+  const lowValueTokens = new Set([
+    // Generic
+    "company", "companys", "career", "background", "experience",
+
+    // Event logistics
+    "keynote", "panel", "fireside", "conference", "summit", "event",
+    "invite", "presentation",
+
+    // Academic context
+    "stanford", "university", "students", "student", "school", "business"
+  ]);
+
+  const tokens = text.split(/\s+/)
+    .filter(token => token.length >= 4) // Keep tokens >= 4 chars
+    .filter(token => !stopwords.has(token))
+    .filter(token => !lowSignalVerbs.has(token))
+    .filter(token => !lowValueTokens.has(token))
+    .filter(token => !/^\d+$/.test(token)); // Not purely numeric
+
+  // 6. Keep top 6-10 keywords (less restrictive than highlightsQuery)
+  const keywords = tokens.slice(0, 10);
+
+  console.log(`[extractIntentKeywords] Extracted ${keywords.length} keywords:`, keywords);
+
+  return keywords;
+}
+
+// Build deterministic highlights query from sender intent
+function buildHighlightsQuery(senderIntent: string): string {
+  // 1. Normalize
+  let text = senderIntent.toLowerCase();
+  text = text.replace(/[^\w\s]/g, ' '); // Replace punctuation with spaces
+  text = text.replace(/\s+/g, ' ').trim(); // Collapse whitespace
+
+  // 2. Strip boilerplate phrases
+  const boilerplatePhrases = [
+    // Outreach boilerplate
+    "i'm reaching out", "reaching out", "reach out",
+    "would love to", "love to", "hoping to",
+    "quick chat", "quick call", "grab time",
+    "i wanted to", "i'm interested in", "i'm curious about",
+    "see if you", "open to", "wondering if",
+    "learn more", "hear about", "your thoughts on",
+
+    // Event logistics
+    "as an mba student", "i'm an mba student",
+    "invite you to", "join us", "fireside chat"
+  ];
+
+  for (const phrase of boilerplatePhrases) {
+    text = text.replace(new RegExp(phrase, 'g'), ' ');
+  }
+
+  text = text.replace(/\s+/g, ' ').trim();
+
+  // 3. Tokenize and remove stopwords
+  const stopwords = new Set([
+    "the", "a", "an", "and", "or", "to", "of", "in", "for", "on", "with", "about", "from",
+    "that", "this", "it", "is", "are", "be", "been", "being", "as", "at", "by", "into",
+    "over", "under", "than", "then", "just", "around"
+  ]);
+
+  // 4. Drop low-signal verbs & filler words
+  const lowSignalVerbs = new Set([
+    // Outreach boilerplate
+    "reach", "reaching", "chat", "call", "connect", "learn", "hear", "discuss",
+    "talk", "share", "help", "looking",
+
+    // Event logistics
+    "speak", "speaker", "come", "quick",
+
+    // Filler verbs
+    "like", "would", "could", "should", "want", "wanted", "make", "getting"
+  ]);
+
+  // 5. Filter low-value tokens
+  const lowValueTokens = new Set([
+    // Generic
+    "company", "companys", "career", "background", "experience",
+
+    // Event logistics
+    "keynote", "panel", "fireside", "conference", "summit", "event",
+    "invite", "presentation",
+
+    // Academic context
+    "stanford", "university", "students", "student", "school", "business"
+  ]);
+
+  const tokens = text.split(/\s+/)
+    .filter(token => token.length >= 4) // Keep tokens >= 4 chars
+    .filter(token => !stopwords.has(token))
+    .filter(token => !lowSignalVerbs.has(token))
+    .filter(token => !lowValueTokens.has(token))
+    .filter(token => !/^\d+$/.test(token)); // Not purely numeric
+
+  // 6. Keep up to 12 tokens
+  const finalTokens = tokens.slice(0, 12);
+
+  // 7. Rebuild phrase
+  let result = finalTokens.join(' ');
+
+  // Cap to ~80 characters
+  if (result.length > 80) {
+    result = result.substring(0, 80).trim();
+  }
+
+  // Fallback: if result is empty or < 3 tokens, use first 12 words of original after boilerplate removal
+  if (finalTokens.length < 3) {
+    const fallbackTokens = text.split(/\s+/).slice(0, 12);
+    result = fallbackTokens.join(' ');
+  }
+
+  console.log(`[buildHighlightsQuery] Original: "${senderIntent}" -> Query: "${result}"`);
+
+  return result || senderIntent; // Ultimate fallback to original
 }
 
 // Phase 3: Content Fetching
@@ -331,6 +627,9 @@ export async function fetchContent(params: {
   }
 
   try {
+    // Build deterministic highlights query if senderIntent exists
+    const highlightsQuery = senderIntent ? buildHighlightsQuery(senderIntent) : undefined;
+
     const response = await fetch('https://api.exa.ai/contents', {
       method: 'POST',
       headers: {
@@ -343,9 +642,9 @@ export async function fetchContent(params: {
           maxCharacters: 5000,
           includeHtmlTags: false
         },
-        ...(senderIntent ? {
+        ...(highlightsQuery ? {
           highlights: {
-            query: senderIntent,
+            query: highlightsQuery,
             numSentences: 3,
             highlightsPerUrl: 3
           }
@@ -399,9 +698,10 @@ export async function extractHooks(params: {
 
   console.log(`[extractHooks] Analyzing ${docs.length} documents for ${name}`);
 
-  // Build the prompt
-  const contentSummary = docs.map((doc, i) =>
-    `Source ${i + 1}: ${doc.title}\nURL: ${doc.url}\n${doc.highlights && doc.highlights.length > 0 ? 'Highlights:\n' + doc.highlights.join('\n') : doc.text.slice(0, 1000)}`
+  // Build the prompt - limit content to leave room for output
+  // With 8 docs, use max 300 chars each = 2400 chars content, leaving ~1600 tokens for output
+  const contentSummary = docs.slice(0, 6).map((doc, i) =>
+    `Source ${i + 1}: ${doc.title}\nURL: ${doc.url}\n${doc.highlights && doc.highlights.length > 0 ? doc.highlights.slice(0, 3).join('\n').slice(0, 300) : doc.text.slice(0, 300)}`
   ).join('\n\n---\n\n');
 
   const prompt = `You are extracting personalization hooks from research about ${name} at ${company}.
@@ -452,7 +752,7 @@ Return JSON only:
           }],
           generationConfig: {
             temperature: 0.3,
-            maxOutputTokens: 2048,
+            maxOutputTokens: 8192,
           }
         })
       }
@@ -468,20 +768,101 @@ Return JSON only:
     }
 
     const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 
-    // Extract JSON from response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      console.error(`[extractHooks] No JSON found in response`);
+    // CRITICAL FIX: Concatenate ALL parts, not just the first one
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const text = parts.map((part: any) => part.text ?? '').join('');
+    const finishReason = data.candidates?.[0]?.finishReason ?? 'UNKNOWN';
+
+    console.log(`[extractHooks] Gemini returned ${parts.length} parts, total length: ${text.length} chars`);
+    console.log(`[extractHooks] Gemini finishReason: ${finishReason}`);
+    console.log(`[extractHooks] First 1000 chars of response:`, text.substring(0, 1000));
+
+    // CRITICAL FIX: Proper JSON extraction instead of greedy regex
+    // The greedy regex /\{[\s\S]*\}/ matches from first { to LAST }, breaking on extra text
+    let parsed;
+
+    // Strategy 1: Find first complete JSON object with balanced braces (MOST RELIABLE)
+    // Must handle strings containing braces like "Microsoft's {team}"
+    const firstBrace = text.indexOf('{');
+    if (firstBrace !== -1) {
+      let depth = 0;
+      let endPos = -1;
+      let inString = false;
+      let escapeNext = false;
+
+      for (let i = firstBrace; i < text.length; i++) {
+        const char = text[i];
+
+        if (escapeNext) {
+          escapeNext = false;
+          continue;
+        }
+
+        if (char === '\\') {
+          escapeNext = true;
+          continue;
+        }
+
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+
+        if (!inString) {
+          if (char === '{') depth++;
+          if (char === '}') {
+            depth--;
+            if (depth === 0) {
+              endPos = i;
+              break;
+            }
+          }
+        }
+      }
+
+      if (endPos !== -1) {
+        const jsonStr = text.substring(firstBrace, endPos + 1);
+        console.log(`[extractHooks] Extracted JSON (balanced braces): ${jsonStr.length} chars`);
+        console.log(`[extractHooks] Extracted JSON content:`, jsonStr);
+        try {
+          parsed = JSON.parse(jsonStr);
+          console.log(`[extractHooks] JSON.parse succeeded! Parsed object has keys:`, Object.keys(parsed));
+        } catch (e) {
+          console.error(`[extractHooks] Balanced JSON parse failed:`, e);
+          console.error(`[extractHooks] Attempted to parse:`, jsonStr.substring(0, 500));
+        }
+      } else {
+        console.error(`[extractHooks] Could not find balanced braces. firstBrace=${firstBrace}, text length=${text.length}`);
+      }
+    }
+
+    // Strategy 2: Try ```json code block as fallback
+    if (!parsed) {
+      const codeBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        console.log(`[extractHooks] Found JSON in code block`);
+        const content = codeBlockMatch[1].trim();
+        if (content.startsWith('{')) {
+          try {
+            parsed = JSON.parse(content);
+          } catch (e) {
+            console.error(`[extractHooks] Code block JSON parse failed:`, e);
+          }
+        }
+      }
+    }
+
+    if (!parsed) {
+      console.error(`[extractHooks] No valid JSON found in response. First 500 chars:`, text.substring(0, 500));
       return {
         hooks: [],
         fallback_mode: 'failed'
       };
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
     const hooks: HookPack[] = (parsed.hooks ?? []).slice(0, 3);
+    console.log(`[extractHooks] Successfully parsed ${hooks.length} hooks from JSON`);
 
     console.log(`[extractHooks] Extracted ${hooks.length} hooks`);
 

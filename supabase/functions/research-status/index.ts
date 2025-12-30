@@ -68,6 +68,15 @@ serve(async (req) => {
     // Extract counts from arrays
     const urlCount = Array.isArray(data.urls) ? data.urls.length : 0;
     const hookCount = Array.isArray(data.hooks) ? data.hooks.length : 0;
+    const hypothesesCount = Array.isArray(data.hypotheses) ? data.hypotheses.length : 0;
+
+    // Calculate research duration if completed
+    let durationMs = null;
+    let durationSec = null;
+    if (data.started_at && data.completed_at) {
+      durationMs = new Date(data.completed_at).getTime() - new Date(data.started_at).getTime();
+      durationSec = (durationMs / 1000).toFixed(2);
+    }
 
     // Build response with all requested fields
     const response = {
@@ -77,15 +86,21 @@ serve(async (req) => {
       progress: data.progress || {},
       counts: {
         urls: urlCount,
-        hooks: hookCount
+        hooks: hookCount,
+        hypotheses: hypothesesCount
       },
       urls: data.urls || [],
       hooks: data.hooks || [],
+      hypotheses: data.hypotheses || [],
       partial: data.partial || false,
       fallback_mode: data.fallback_mode || 'failed',
       error: data.error || null,
       created_at: data.created_at,
-      updated_at: data.updated_at
+      updated_at: data.updated_at,
+      started_at: data.started_at || null,
+      completed_at: data.completed_at || null,
+      duration_ms: durationMs,
+      duration_sec: durationSec
     };
 
     console.log(`[GET /research-status] ${requestId}: ${data.status} (${hookCount} hooks, ${urlCount} urls)`);
