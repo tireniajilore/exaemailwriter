@@ -550,8 +550,8 @@ Output (3-7 words only):`;
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 50,
+            temperature: 0.2,
+            maxOutputTokens: 128,
           },
         }),
       }
