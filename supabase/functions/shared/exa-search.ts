@@ -132,19 +132,18 @@ async function generateSearchHypotheses(params: {
   const prompt = `You are generating search queries for Exa, a neural semantic search engine.
 
 IMPORTANT CONTEXT ABOUT EXA:
-Exa works best when queries describe the KIND OF DOCUMENT you want to find,
-not when they ask questions or make claims.
+Exa works best when queries describe the KIND OF DOCUMENT to retrieve,
+not abstract topics or resume-style categories.
 
 Good Exa queries:
-- Read like descriptions of articles, interviews, talks, or essays
-- Combine: ENTITY + CONTENT TYPE + THEME
-- Are neutral and discovery-oriented (do not assert facts)
+- Sound like descriptions of real articles, interviews, profiles, or essays
+- Combine: ENTITY + DOCUMENT TYPE + THEME
+- Are neutral and discovery-oriented
 
 Bad Exa queries:
-- Resume bullets or invented claims (e.g. "led X", "built Y")
-- Outreach or email language ("I'm reaching out", "would like to")
-- Vague domain-only phrases with no entity anchor
-- Career summaries ("background", "experience", "profile")
+- Generic categories ("professional background", "career experience")
+- Resume bullets or asserted facts ("led", "built", "created")
+- Outreach language or vague topic labels
 
 ---
 
@@ -155,58 +154,47 @@ Role: ${role || "N/A"}
 Sender's Intent:
 ${senderIntent}
 
-Each query must remain clearly relevant to the sender's intent theme, even while staying neutral and discovery-oriented.
-
 ---
 
 TASK
 
 Generate EXACTLY 3 Exa search queries.
 
-Each query must target a DIFFERENT TYPE of PUBLICLY VERIFIABLE SIGNAL.
-You are searching for evidence that MAY exist — do NOT assume anything is true.
+Each query must target a DIFFERENT TYPE of PUBLIC SIGNAL and must be
+specific enough to plausibly match the title or description of a real document.
 
 Generate the queries in this order:
 
 1) PUBLIC VOICE
-   A query that could surface interviews, podcasts, talks, panels, essays,
-   or other first-person public commentary by ${name}.
-   (Do not reference specific quotes or opinions.)
+   A query that could plausibly match an interview, podcast episode,
+   talk description, or essay by ${name}.
 
 2) PROFESSIONAL WORK / COMPANY CONTEXT
-   A query that could surface initiatives, programs, strategies, or areas of
-   work associated with ${name}'s role or company.
-   (Do not claim ownership or leadership.)
+   A query that could plausibly match an article or profile describing
+   initiatives, strategy, or areas of work associated with ${name}'s role
+   or company.
 
 3) CAREER FACTS / TRANSITIONS
-   A query that could surface factual career history or role transitions
-   involving ${name}.
-   (Do not speculate on motivations.)
+   A query that could plausibly match a profile or news article describing
+   a career transition, role change, or executive appointment involving ${name}.
 
 ---
 
 CONSTRAINTS
 
 - Each query MUST include ${name}.
-- Include ${company} ONLY if it helps narrow the search.${company && identityConfidence !== undefined && identityConfidence < 0.85 ? `\n- Because the recipient's name may be ambiguous, include the company name in all queries.` : ''}
+- Include ${company} when it helps disambiguation or relevance.${company && identityConfidence !== undefined && identityConfidence < 0.85 ? `\n- Because the recipient's name may be ambiguous, include the company name in all queries.` : ''}
 - Queries should be 8–16 words.
-- Use content-type nouns when appropriate (e.g. interview, podcast, talk, essay).
-- Avoid claims, outreach language, or resume-style wording.
+- Avoid generic placeholders like "professional background" or "career history".
+- Avoid assertive verbs ("led", "built", "created").
 - The three queries must not be near-duplicates.
 
 ---
 
 OUTPUT FORMAT
 
-Return ONLY a JSON array of 3 strings, in the same order as above.
-No explanations. No markdown. No extra text.
-
-Example output format:
-[
-  "search query 1",
-  "search query 2",
-  "search query 3"
-]`;
+Return ONLY a JSON array of 3 strings, in the order above.
+No explanations. No markdown. No extra text.`;
 
   try {
     const response = await fetch(
