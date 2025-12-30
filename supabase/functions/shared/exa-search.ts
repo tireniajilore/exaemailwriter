@@ -786,13 +786,25 @@ Required output format:
     const text = parts.map((part: any) => part.text ?? '').join('');
     const finishReason = data.candidates?.[0]?.finishReason ?? 'UNKNOWN';
 
-    console.log(`[extractHooks] Gemini returned ${parts.length} parts, total length: ${text.length} chars`);
+    console.log(`[extractHooks] Gemini returned ${parts.length} parts, total length: ${text.length} chars, maxOutputTokens: 2500`);
     console.log(`[extractHooks] Gemini finishReason: ${finishReason}`);
     console.log(`[extractHooks] First 1000 chars of response:`, text.substring(0, 1000));
 
-    // Parser guard: early exit if no JSON structure
-    if (!text.includes('{') || !text.includes('}')) {
-      console.error(`[extractHooks] Parser guard: no JSON braces found`);
+    // CRITICAL FIX: Proper JSON extraction instead of greedy regex
+    // The greedy regex /\{[\s\S]*\}/ matches from first { to LAST }, breaking on extra text
+    let parsed;
+    let cleanedText = text;
+
+    // Strategy 1: Strip code fences if present
+    const codeBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+    if (codeBlockMatch) {
+      cleanedText = codeBlockMatch[1].trim();
+      console.log(`[extractHooks] Stripped code fence, cleaned length: ${cleanedText.length} chars`);
+    }
+
+    // Parser guard: early exit if no JSON structure AFTER code fence stripping
+    if (!cleanedText.includes('{') || !cleanedText.includes('}')) {
+      console.error(`[extractHooks] Parser guard: no JSON braces found in cleaned text`);
       return {
         hooks: [],
         fallback_mode: 'extraction_failed',
@@ -801,21 +813,17 @@ Required output format:
       };
     }
 
-    // CRITICAL FIX: Proper JSON extraction instead of greedy regex
-    // The greedy regex /\{[\s\S]*\}/ matches from first { to LAST }, breaking on extra text
-    let parsed;
-
-    // Strategy 1: Find first complete JSON object with balanced braces (MOST RELIABLE)
+    // Strategy 2: Find first complete JSON object with balanced braces (MOST RELIABLE)
     // Must handle strings containing braces like "Microsoft's {team}"
-    const firstBrace = text.indexOf('{');
+    const firstBrace = cleanedText.indexOf('{');
     if (firstBrace !== -1) {
       let depth = 0;
       let endPos = -1;
       let inString = false;
       let escapeNext = false;
 
-      for (let i = firstBrace; i < text.length; i++) {
-        const char = text[i];
+      for (let i = firstBrace; i < cleanedText.length; i++) {
+        const char = cleanedText[i];
 
         if (escapeNext) {
           escapeNext = false;
@@ -845,7 +853,7 @@ Required output format:
       }
 
       if (endPos !== -1) {
-        const jsonStr = text.substring(firstBrace, endPos + 1);
+        const jsonStr = cleanedText.substring(firstBrace, endPos + 1);
         console.log(`[extractHooks] Extracted JSON (balanced braces): ${jsonStr.length} chars`);
         console.log(`[extractHooks] Extracted JSON content:`, jsonStr);
         try {
@@ -856,23 +864,7 @@ Required output format:
           console.error(`[extractHooks] Attempted to parse:`, jsonStr.substring(0, 500));
         }
       } else {
-        console.error(`[extractHooks] Could not find balanced braces. firstBrace=${firstBrace}, text length=${text.length}`);
-      }
-    }
-
-    // Strategy 2: Try ```json code block as fallback
-    if (!parsed) {
-      const codeBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-      if (codeBlockMatch) {
-        console.log(`[extractHooks] Found JSON in code block`);
-        const content = codeBlockMatch[1].trim();
-        if (content.startsWith('{')) {
-          try {
-            parsed = JSON.parse(content);
-          } catch (e) {
-            console.error(`[extractHooks] Code block JSON parse failed:`, e);
-          }
-        }
+        console.error(`[extractHooks] Could not find balanced braces. firstBrace=${firstBrace}, cleanedText length=${cleanedText.length}`);
       }
     }
 
