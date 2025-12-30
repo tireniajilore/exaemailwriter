@@ -66,22 +66,29 @@ Output requirements:
 - No explanations
 - No markdown
 - No prose before or after JSON
-- Always return an object with a "hooks" array
+- Return exactly 3 hooks (or fewer if content insufficient)
 - evidenceQuotes is REQUIRED for all hooks
+
+STRICT CHARACTER LIMITS (critical for performance):
+- title: ≤ 80 characters
+- hook: ≤ 220 characters
+- whyItWorks: ≤ 160 characters
+- weaknessNote: ≤ 120 characters (if present)
+- Each evidenceQuote: ≤ 200 characters
 
 Required output format:
 {
   "hooks": [
     {
       "id": "hook_1",
-      "title": "Short label",
-      "hook": "The specific fact or signal (1-2 sentences)",
-      "whyItWorks": "Why this connects to sender's intent (1 sentence)",
+      "title": "Short label (≤80 chars)",
+      "hook": "The specific fact or signal (≤220 chars)",
+      "whyItWorks": "Why this connects to sender's intent (≤160 chars)",
       "confidence": 0.85,
       "strength": "tier1" | "tier2" | "tier3",
-      "weaknessNote": "Optional explanation if confidence < 0.5",
+      "weaknessNote": "Optional (≤120 chars)",
       "sources": [{"label": "Source 1", "url": "..."}],
-      "evidenceQuotes": [{"label": "Source 1", "quote": "verbatim text from source"}]
+      "evidenceQuotes": [{"label": "Source 1", "quote": "verbatim text (≤200 chars)"}]
     }
   ]
 }`;

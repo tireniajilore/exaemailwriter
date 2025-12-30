@@ -766,22 +766,29 @@ Output requirements:
 - No explanations
 - No markdown
 - No prose before or after JSON
-- Always return an object with a "hooks" array
+- Return exactly 3 hooks (or fewer if content insufficient)
 - evidenceQuotes is REQUIRED for all hooks
+
+STRICT CHARACTER LIMITS (critical for performance):
+- title: ≤ 80 characters
+- hook: ≤ 220 characters
+- whyItWorks: ≤ 160 characters
+- weaknessNote: ≤ 120 characters (if present)
+- Each evidenceQuote: ≤ 200 characters
 
 Required output format:
 {
   "hooks": [
     {
       "id": "hook_1",
-      "title": "...",
-      "hook": "...",
-      "whyItWorks": "...",
+      "title": "Short label (≤80 chars)",
+      "hook": "The specific fact or signal (≤220 chars)",
+      "whyItWorks": "Why this connects to sender's intent (≤160 chars)",
       "confidence": 0.85,
       "strength": "tier1" | "tier2" | "tier3",
-      "weaknessNote": "Optional explanation if confidence < 0.5",
+      "weaknessNote": "Optional (≤120 chars)",
       "sources": [{"label": "Source 1", "url": "..."}],
-      "evidenceQuotes": [{"label": "Source 1", "quote": "verbatim text"}]
+      "evidenceQuotes": [{"label": "Source 1", "quote": "verbatim text (≤200 chars)"}]
     }
   ]
 }`;
@@ -800,7 +807,7 @@ Required output format:
           }],
           generationConfig: {
             temperature: 0.3,
-            maxOutputTokens: 2500,
+            maxOutputTokens: 4000, // Increased for stability padding
           }
         })
       }
@@ -822,7 +829,7 @@ Required output format:
     const text = parts.map((part: any) => part.text ?? '').join('');
     const finishReason = data.candidates?.[0]?.finishReason ?? 'UNKNOWN';
 
-    console.log(`[extractHooks] Gemini returned ${parts.length} parts, total length: ${text.length} chars, maxOutputTokens: 2500`);
+    console.log(`[extractHooks] Gemini returned ${parts.length} parts, total length: ${text.length} chars, maxOutputTokens: 4000`);
     console.log(`[extractHooks] Gemini finishReason: ${finishReason}`);
     console.log(`[extractHooks] First 1000 chars of response:`, text.substring(0, 1000));
 
@@ -904,13 +911,110 @@ Required output format:
       }
     }
 
+    // TRUNCATION-AWARE FALLBACK: Handle MAX_TOKENS by salvaging partial JSON
+    if (!parsed && finishReason === 'MAX_TOKENS') {
+      console.warn(`[extractHooks] MAX_TOKENS detected, attempting partial salvage`);
+
+      // Try to salvage last complete hook object
+      const firstBrace = cleanedText.indexOf('{');
+      if (firstBrace !== -1) {
+        // Find all complete hook objects by looking for complete {...} patterns
+        const salvaged = { hooks: [] };
+        let searchStart = cleanedText.indexOf('"hooks"');
+
+        if (searchStart !== -1) {
+          const arrayStart = cleanedText.indexOf('[', searchStart);
+          if (arrayStart !== -1) {
+            let currentPos = arrayStart + 1;
+
+            while (currentPos < cleanedText.length) {
+              // Skip whitespace
+              while (currentPos < cleanedText.length && /\s/.test(cleanedText[currentPos])) {
+                currentPos++;
+              }
+
+              if (cleanedText[currentPos] === '{') {
+                // Try to extract complete object
+                let depth = 0;
+                let endPos = -1;
+                let inString = false;
+                let escapeNext = false;
+
+                for (let i = currentPos; i < cleanedText.length; i++) {
+                  const char = cleanedText[i];
+
+                  if (escapeNext) {
+                    escapeNext = false;
+                    continue;
+                  }
+
+                  if (char === '\\') {
+                    escapeNext = true;
+                    continue;
+                  }
+
+                  if (char === '"') {
+                    inString = !inString;
+                    continue;
+                  }
+
+                  if (!inString) {
+                    if (char === '{') depth++;
+                    if (char === '}') {
+                      depth--;
+                      if (depth === 0) {
+                        endPos = i;
+                        break;
+                      }
+                    }
+                  }
+                }
+
+                if (endPos !== -1) {
+                  const objStr = cleanedText.substring(currentPos, endPos + 1);
+                  try {
+                    const hookObj = JSON.parse(objStr);
+                    salvaged.hooks.push(hookObj);
+                    console.log(`[extractHooks] Salvaged hook object ${salvaged.hooks.length}`);
+                    currentPos = endPos + 1;
+                  } catch (e) {
+                    console.error(`[extractHooks] Failed to parse salvaged object:`, e);
+                    break; // Stop trying if we hit malformed JSON
+                  }
+                } else {
+                  // Incomplete object, stop here
+                  break;
+                }
+              } else if (cleanedText[currentPos] === ']') {
+                // End of array
+                break;
+              } else {
+                // Unexpected character, skip
+                currentPos++;
+              }
+
+              // Skip comma if present
+              while (currentPos < cleanedText.length && /[\s,]/.test(cleanedText[currentPos])) {
+                currentPos++;
+              }
+            }
+          }
+        }
+
+        if (salvaged.hooks.length > 0) {
+          console.log(`[extractHooks] Salvaged ${salvaged.hooks.length} complete hooks from truncated output`);
+          parsed = salvaged;
+        }
+      }
+    }
+
     if (!parsed) {
       console.error(`[extractHooks] No valid JSON found in response. First 500 chars:`, text.substring(0, 500));
       return {
         hooks: [],
         fallback_mode: 'extraction_failed',
         fallback_used: false,
-        fallback_reason: 'json_parse_failed'
+        fallback_reason: finishReason === 'MAX_TOKENS' ? 'max_tokens_no_salvage' : 'json_parse_failed'
       };
     }
 
@@ -968,7 +1072,7 @@ Required output format:
             contents: [{ parts: [{ text: fallbackPrompt }] }],
             generationConfig: {
               temperature: 0.2,
-              maxOutputTokens: 3500,
+              maxOutputTokens: 5000, // Increased for fallback stability
             }
           })
         }
