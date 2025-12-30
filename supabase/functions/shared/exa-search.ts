@@ -687,41 +687,45 @@ export async function extractHooks(params: {
   const { buildContentSummary } = await import('./content-summary.ts');
   const contentSummary = buildContentSummary(docs, "normal");
 
-  const prompt = `You are extracting personalization hooks from research about ${name} at ${company}.
+  const prompt = `You are extracting personalization hooks about ${name} at ${company} based on provided content.
 
 SENDER'S INTENT: ${senderIntent ?? 'Not specified - general networking'}
 
 CONTENT SOURCES:
 ${contentSummary}
 
-TASK: Extract 1-3 specific hooks that:
-1. Reference a credible, attributable signal connected to the person's role, trajectory, or work — even if indirect
-2. Are directly relevant to the sender's intent
-3. Have verifiable evidence from the sources
+A valid hook is any specific, verifiable signal that is credibly attributable to the person's role, trajectory, professional focus, public engagement, or organizational association.
 
-Examples that count:
-- "Transitioned into Product Management at Wealthfront after MBA"
-- "Engaged publicly in US MBA application discussions"
-- "Associated with Wealthfront's PM org during X initiative (even if not named owner)"
+Important rules:
+- Attribution may be direct OR indirect.
+- The signal does NOT need to be authored by the person.
+- Do NOT require named projects, quotes, or first-person statements.
+- Do NOT infer opinions or intentions without evidence.
+- Do NOT include generic company or industry descriptions unless clearly connected to the person.
 
-For each hook, create:
-- id: unique identifier (hook_1, hook_2, etc.)
-- title: Short label (e.g., "Transitioned to PM at Wealthfront")
-- hook: The specific fact or signal (1-2 sentences)
-- whyItWorks: Why this connects to sender's intent (1 sentence)
-- confidence: 0.0-1.0 score of how strong/relevant this hook is
-- sources: Array of {label, url} from the content above
-- evidenceQuotes: Array of {label, quote} with verbatim text from the source snippet above
+Acceptable signals include (non-exhaustive):
+- Evidence of role, responsibilities, or team membership
+- Career transitions or professional trajectory
+- Public participation in discussions, forums, or discourse
+- Association with initiatives, domains, or functions
+- Documented context that helps explain what the person works on or cares about
 
-You MUST return valid JSON only.
-If no hooks exist, return:
-{ "hooks": [] }
-Do NOT explain why.
-Do NOT include prose.
-Do NOT include markdown.
-If you cannot comply fully, still return valid JSON.
+Unacceptable signals:
+- Pure speculation
+- Generic company information with no individual linkage
+- Industry trends not tied to the person
+- Assumptions without source evidence
 
-Return JSON only:
+If NO valid hooks exist, return an empty array.
+
+Output requirements:
+- Return VALID JSON ONLY
+- No explanations
+- No markdown
+- No prose before or after JSON
+- Always return an object with a "hooks" array
+
+Required output format:
 {
   "hooks": [
     {
