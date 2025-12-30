@@ -129,6 +129,9 @@ async function generateSearchHypotheses(params: {
     ];
   }
 
+  // Compute disambiguation flag
+  const forceCompany = identityConfidence !== undefined && identityConfidence < 0.8 && company?.trim().length;
+
   const prompt = `You are generating search queries for Exa, a neural semantic search engine.
 
 IMPORTANT CONTEXT ABOUT EXA:
@@ -183,11 +186,14 @@ Generate the queries in this order:
 CONSTRAINTS
 
 - Each query MUST include ${name}.
-- Include ${company} when it helps disambiguation or relevance.${company && identityConfidence !== undefined && identityConfidence < 0.85 ? `\n- Because the recipient's name may be ambiguous, include the company name in all queries.` : ''}
+- Include ${company} when it helps disambiguation or relevance.
 - Queries should be 8–16 words.
 - Avoid generic placeholders like "professional background" or "career history".
 - Avoid assertive verbs ("led", "built", "created").
 - The three queries must not be near-duplicates.
+${forceCompany ? `\nDISAMBIGUATION RULE:
+Identity confidence is below 0.8. ${name} may be ambiguous.
+Therefore, ALL THREE queries MUST include "${company}".` : ''}
 
 ---
 
