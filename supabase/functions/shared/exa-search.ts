@@ -31,11 +31,14 @@ export interface HookPack {
   whyItWorks: string;
   confidence: number;
   sources: Array<{ label: string; url: string }>;
+  evidenceQuotes?: Array<{ label: string; quote: string }>;
 }
 
 export interface HookExtractionResult {
   hooks: HookPack[];
   fallback_mode: 'sufficient' | 'minimal' | 'failed';
+  fallback_used?: boolean;
+  fallback_reason?: string | null;
 }
 
 // Phase 1: Identity Verification
@@ -643,10 +646,13 @@ export async function fetchContent(params: {
       url: r.url ?? '',
       title: r.title ?? '',
       text: r.text ?? '',
-      highlights: r.highlights ?? []
+      highlights: Array.isArray(r.highlights) ? r.highlights : []
     })).filter((d: FetchedDocument) => d.text && d.text.length > 100);
 
-    console.log(`[fetchContent] Successfully fetched ${docs.length} documents`);
+    const avgTextChars = docs.length > 0 ? Math.round(docs.reduce((sum, d) => sum + d.text.length, 0) / docs.length) : 0;
+    const totalHighlightsChars = docs.reduce((sum, d) => sum + (d.highlights || []).join(' ').length, 0);
+
+    console.log(`[fetchContent] Successfully fetched ${docs.length} documents, avg_text_chars=${avgTextChars}, total_highlights_chars=${totalHighlightsChars}`);
 
     return {
       docs,
@@ -677,11 +683,9 @@ export async function extractHooks(params: {
 
   console.log(`[extractHooks] Analyzing ${docs.length} documents for ${name}`);
 
-  // Build the prompt - limit content to leave room for output
-  // With 8 docs, use max 300 chars each = 2400 chars content, leaving ~1600 tokens for output
-  const contentSummary = docs.slice(0, 6).map((doc, i) =>
-    `Source ${i + 1}: ${doc.title}\nURL: ${doc.url}\n${doc.highlights && doc.highlights.length > 0 ? doc.highlights.slice(0, 3).join('\n').slice(0, 300) : doc.text.slice(0, 300)}`
-  ).join('\n\n---\n\n');
+  // Import content summary builder
+  const { buildContentSummary } = await import('./content-summary.ts');
+  const contentSummary = buildContentSummary(docs, "normal");
 
   const prompt = `You are extracting personalization hooks from research about ${name} at ${company}.
 
@@ -702,6 +706,7 @@ For each hook, create:
 - whyItWorks: Why this connects to sender's intent (1 sentence)
 - confidence: 0.0-1.0 score of how strong/relevant this hook is
 - sources: Array of {label, url} from the content above
+- evidenceQuotes: Array of {label, quote} with verbatim text from the source snippet above
 
 Return JSON only:
 {
@@ -712,7 +717,8 @@ Return JSON only:
       "hook": "...",
       "whyItWorks": "...",
       "confidence": 0.85,
-      "sources": [{"label": "Source 1", "url": "..."}]
+      "sources": [{"label": "Source 1", "url": "..."}],
+      "evidenceQuotes": [{"label": "Source 1", "quote": "verbatim text"}]
     }
   ]
 }`;
@@ -731,7 +737,7 @@ Return JSON only:
           }],
           generationConfig: {
             temperature: 0.3,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 2500,
           }
         })
       }
@@ -843,6 +849,85 @@ Return JSON only:
     const hooks: HookPack[] = (parsed.hooks ?? []).slice(0, 3);
     console.log(`[extractHooks] Successfully parsed ${hooks.length} hooks from JSON`);
 
+    // Calculate highlights chars for fallback decision
+    const { totalHighlightsChars, shouldUseFallback } = await import('./research-fallback.ts');
+    const highlightsChars = totalHighlightsChars(docs);
+    const fallbackDecision = shouldUseFallback({ docs, hooksCount: hooks.length });
+
+    console.log(`[extractHooks] normal_hooks=${hooks.length} highlights_chars=${highlightsChars}`);
+    console.log(`[extractHooks] fallback_decision=${fallbackDecision.useFallback} reason=${fallbackDecision.reason}`);
+
+    // If fallback needed, run it
+    if (fallbackDecision.useFallback) {
+      console.log(`[extractHooks] Running fallback extraction with raw text excerpts`);
+
+      const contentSummaryFallback = buildContentSummary(docs, "fallback");
+      const { buildExtractHooksFallbackPrompt } = await import('./prompts/extract-hooks-fallback.ts');
+      const fallbackPrompt = buildExtractHooksFallbackPrompt({ name, company, senderIntent, contentSummary: contentSummaryFallback });
+
+      const fallbackResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: fallbackPrompt }] }],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 3500,
+            }
+          })
+        }
+      );
+
+      if (fallbackResponse.ok) {
+        const fallbackData = await fallbackResponse.json();
+        const fallbackParts = fallbackData.candidates?.[0]?.content?.parts ?? [];
+        const fallbackText = fallbackParts.map((part: any) => part.text ?? '').join('');
+
+        let fallbackParsed = null;
+        const firstBrace = fallbackText.indexOf('{');
+        if (firstBrace !== -1) {
+          let depth = 0, lastClose = -1;
+          for (let i = firstBrace; i < fallbackText.length; i++) {
+            if (fallbackText[i] === '{') depth++;
+            if (fallbackText[i] === '}') { depth--; if (depth === 0) { lastClose = i; break; } }
+          }
+          if (lastClose !== -1) {
+            const jsonStr = fallbackText.substring(firstBrace, lastClose + 1);
+            try { fallbackParsed = JSON.parse(jsonStr); } catch {}
+          }
+        }
+
+        if (!fallbackParsed) {
+          const match = fallbackText.match(/```json\s*(\{[\s\S]*?\})\s*```/);
+          if (match) {
+            try { fallbackParsed = JSON.parse(match[1]); } catch {}
+          }
+        }
+
+        if (fallbackParsed && fallbackParsed.hooks) {
+          const fallbackHooks = (fallbackParsed.hooks ?? []).slice(0, 3);
+          console.log(`[extractHooks] fallback_hooks=${fallbackHooks.length}`);
+
+          if (fallbackHooks.length > 0) {
+            const strongHooks = fallbackHooks.filter(h => (h.confidence ?? 0) >= 0.65);
+            const decentHooks = fallbackHooks.filter(h => (h.confidence ?? 0) >= 0.5);
+
+            let fallback_mode: 'sufficient' | 'minimal' | 'failed';
+            if (strongHooks.length >= 2) fallback_mode = 'sufficient';
+            else if (decentHooks.length >= 1) fallback_mode = 'minimal';
+            else fallback_mode = 'failed';
+
+            return { hooks: fallbackHooks, fallback_mode, fallback_used: true, fallback_reason: fallbackDecision.reason };
+          }
+        }
+      }
+
+      console.log(`[extractHooks] Fallback extraction failed, returning empty hooks`);
+      return { hooks: [], fallback_mode: 'failed', fallback_used: true, fallback_reason: fallbackDecision.reason };
+    }
+
     console.log(`[extractHooks] Extracted ${hooks.length} hooks`);
 
     // Determine fallback mode
@@ -860,13 +945,17 @@ Return JSON only:
 
     return {
       hooks,
-      fallback_mode
+      fallback_mode,
+      fallback_used: false,
+      fallback_reason: null
     };
   } catch (error) {
     console.error(`[extractHooks] Error:`, error);
     return {
       hooks: [],
-      fallback_mode: 'failed'
+      fallback_mode: 'failed',
+      fallback_used: false,
+      fallback_reason: null
     };
   }
 }
