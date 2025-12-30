@@ -525,30 +525,19 @@ async function buildHighlightsQuery(senderIntent: string, geminiApiKey: string):
     return senderIntent;
   }
 
-  const prompt = `You are extracting a SHORT topical search phrase for semantic retrieval.
+  const prompt = `Extract the core topic from the following text as a 3-7 word phrase.
 
-Your output will be used as a query to highlight relevant passages
-from long-form documents. It must represent the CORE TOPIC of the input,
-not the action being taken.
+Rules:
+- Remove action words (want, hope, invite, ask, reach out)
+- Remove logistics (events, locations, timing, institutions)
+- Remove people's names
+- Use nouns and noun phrases only
+- Do not add new information
 
-TASK:
-Rewrite the text below into a concise topic phrase suitable for semantic search.
-
-RULES:
-- Output 3–7 words
-- Focus on the underlying subject or theme
-- Remove outreach or intent language (e.g., invite, want, reach out, ask, hope)
-- Remove logistics or context-setting details (events, locations, timing, institutions)
-- Do NOT add new ideas or infer facts
-- Do NOT include names of people
-- Do NOT write a sentence (no verbs unless unavoidable)
-- Prefer nouns or noun phrases
-
-INPUT:
+Input:
 ${senderIntent}
 
-OUTPUT:
-<topic phrase only>`;
+Output (3-7 words only):`;
 
   try {
     const response = await fetch(
@@ -567,15 +556,20 @@ OUTPUT:
     );
 
     if (!response.ok) {
-      console.error('[buildHighlightsQuery] Gemini API error:', response.status);
+      const errorText = await response.text();
+      console.error('[buildHighlightsQuery] Gemini API error:', response.status, errorText);
       return senderIntent;
     }
 
     const data = await response.json();
-    const topicPhrase = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    console.log('[buildHighlightsQuery] Gemini response:', JSON.stringify(data));
+
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const finishReason = data.candidates?.[0]?.finishReason;
+    const topicPhrase = parts.map((part: any) => part.text ?? '').join('').trim();
 
     if (!topicPhrase) {
-      console.warn('[buildHighlightsQuery] Empty response from Gemini');
+      console.warn('[buildHighlightsQuery] Empty response from Gemini. finishReason:', finishReason, 'Full response:', JSON.stringify(data));
       return senderIntent;
     }
 
