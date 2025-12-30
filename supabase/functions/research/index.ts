@@ -242,6 +242,7 @@ async function executeResearch(
     const fetchResult: ContentFetchResult = await fetchContent({
       urls: discoveryResult.urls,
       exaApiKey,
+      geminiApiKey,
       senderIntent
     });
 
