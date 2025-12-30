@@ -581,6 +581,7 @@ Output (3-7 words only):`;
           generationConfig: {
             temperature: 0.2,
             maxOutputTokens: 128,
+            thinking_budget: 0, // Disable thinking tokens (snake_case for Vertex/GenAI)
           },
         }),
       }
@@ -808,6 +809,7 @@ Required output format:
           generationConfig: {
             temperature: 0.3,
             maxOutputTokens: 4000, // Increased for stability padding
+            thinking_budget: 0, // Disable thinking tokens (snake_case for Vertex/GenAI)
           }
         })
       }
@@ -1147,6 +1149,7 @@ Required output format:
             generationConfig: {
               temperature: 0.2,
               maxOutputTokens: 5000, // Increased for fallback stability
+              thinking_budget: 0, // Disable thinking tokens (snake_case for Vertex/GenAI)
             }
           })
         }
