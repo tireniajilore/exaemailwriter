@@ -528,110 +528,83 @@ function extractIntentKeywords(senderIntent: string): string[] {
   return keywords;
 }
 
-// Build deterministic highlights query from sender intent
-function buildHighlightsQuery(senderIntent: string): string {
-  // 1. Normalize
-  let text = senderIntent.toLowerCase();
-  text = text.replace(/[^\w\s]/g, ' '); // Replace punctuation with spaces
-  text = text.replace(/\s+/g, ' ').trim(); // Collapse whitespace
-
-  // 2. Strip boilerplate phrases (do this BEFORE tokenization)
-  const boilerplatePhrases = [
-    // Outreach boilerplate
-    "i m reaching out", "reaching out", "reach out to", "reach out",
-    "would love to", "love to", "hoping to", "hope to",
-    "quick chat", "quick call", "grab time",
-    "i wanted to", "i want to", "want to invite", "want him to", "want her to",
-    "invite him to", "invite her to", "invite them to", "invite you to",
-    "invite him", "invite her",
-    "i m interested in", "i m curious about",
-    "see if you", "see if he", "see if she",
-    "open to", "wondering if",
-    "learn more", "hear about", "hear more", "your thoughts on",
-
-    // Event logistics
-    "as an mba student", "i m an mba student",
-    "join us", "fireside chat",
-    "speak at", "speaking at", "speak at the", "at the", "to the",
-    "come speak", "come and speak",
-    "for the"
-  ];
-
-  for (const phrase of boilerplatePhrases) {
-    text = text.replace(new RegExp(phrase, 'g'), ' ');
+// Build highlights query using Gemini to extract core topic
+async function buildHighlightsQuery(senderIntent: string, geminiApiKey: string): Promise<string> {
+  if (!senderIntent || !geminiApiKey) {
+    console.warn('[buildHighlightsQuery] Missing senderIntent or geminiApiKey, using fallback');
+    return senderIntent;
   }
 
-  text = text.replace(/\s+/g, ' ').trim();
+  const prompt = `You are extracting a SHORT topical search phrase for semantic retrieval.
 
-  // 3. Tokenize and remove stopwords
-  const stopwords = new Set([
-    "the", "a", "an", "and", "or", "to", "of", "in", "for", "on", "with", "about", "from",
-    "that", "this", "it", "is", "are", "be", "been", "being", "as", "at", "by", "into",
-    "over", "under", "than", "then", "just", "around"
-  ]);
+Your output will be used as a query to highlight relevant passages
+from long-form documents. It must represent the CORE TOPIC of the input,
+not the action being taken.
 
-  // 4. Drop low-signal verbs & filler words
-  const lowSignalVerbs = new Set([
-    // Outreach boilerplate
-    "reach", "reaching", "chat", "call", "connect", "learn", "hear", "discuss",
-    "talk", "share", "help", "looking",
+TASK:
+Rewrite the text below into a concise topic phrase suitable for semantic search.
 
-    // Event logistics
-    "speak", "speaker", "come", "quick",
+RULES:
+- Output 3–7 words
+- Focus on the underlying subject or theme
+- Remove outreach or intent language (e.g., invite, want, reach out, ask, hope)
+- Remove logistics or context-setting details (events, locations, timing, institutions)
+- Do NOT add new ideas or infer facts
+- Do NOT include names of people
+- Do NOT write a sentence (no verbs unless unavoidable)
+- Prefer nouns or noun phrases
 
-    // Filler verbs
-    "like", "would", "could", "should", "want", "wanted", "make", "getting"
-  ]);
+INPUT:
+${senderIntent}
 
-  // 5. Filter low-value tokens
-  const lowValueTokens = new Set([
-    // Generic
-    "company", "companys", "career", "background", "experience",
+OUTPUT:
+<topic phrase only>`;
 
-    // Event logistics
-    "keynote", "panel", "fireside", "conference", "summit", "event",
-    "invite", "presentation",
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 50,
+          },
+        }),
+      }
+    );
 
-    // Academic context
-    "stanford", "university", "students", "student", "school", "business"
-  ]);
+    if (!response.ok) {
+      console.error('[buildHighlightsQuery] Gemini API error:', response.status);
+      return senderIntent;
+    }
 
-  const tokens = text.split(/\s+/)
-    .filter(token => token.length >= 4) // Keep tokens >= 4 chars
-    .filter(token => !stopwords.has(token))
-    .filter(token => !lowSignalVerbs.has(token))
-    .filter(token => !lowValueTokens.has(token))
-    .filter(token => !/^\d+$/.test(token)); // Not purely numeric
+    const data = await response.json();
+    const topicPhrase = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
 
-  // 6. Keep up to 12 tokens
-  const finalTokens = tokens.slice(0, 12);
+    if (!topicPhrase) {
+      console.warn('[buildHighlightsQuery] Empty response from Gemini');
+      return senderIntent;
+    }
 
-  // 7. Rebuild phrase
-  let result = finalTokens.join(' ');
-
-  // Cap to ~80 characters
-  if (result.length > 80) {
-    result = result.substring(0, 80).trim();
+    console.log(`[buildHighlightsQuery] Original: "${senderIntent}" -> Topic: "${topicPhrase}"`);
+    return topicPhrase;
+  } catch (error) {
+    console.error('[buildHighlightsQuery] Error:', error);
+    return senderIntent; // Fallback to original
   }
-
-  // Fallback: if result is empty or < 3 tokens, use first 12 words of original after boilerplate removal
-  if (finalTokens.length < 3) {
-    const fallbackTokens = text.split(/\s+/).slice(0, 12);
-    result = fallbackTokens.join(' ');
-  }
-
-  console.log(`[buildHighlightsQuery] Original: "${senderIntent}" -> Query: "${result}"`);
-
-  return result || senderIntent; // Ultimate fallback to original
 }
 
 // Phase 3: Content Fetching
 export async function fetchContent(params: {
   urls: Array<{ id: string; url: string; title: string }>;
   exaApiKey: string;
+  geminiApiKey: string;
   senderIntent?: string;
 }): Promise<ContentFetchResult> {
-  const { urls, exaApiKey, senderIntent } = params;
+  const { urls, exaApiKey, geminiApiKey, senderIntent } = params;
 
   if (!urls || urls.length === 0) {
     return { docs: [], fetchedCount: 0 };
@@ -646,8 +619,8 @@ export async function fetchContent(params: {
   }
 
   try {
-    // Build deterministic highlights query if senderIntent exists
-    const highlightsQuery = senderIntent ? buildHighlightsQuery(senderIntent) : undefined;
+    // Build Gemini-powered highlights query if senderIntent exists
+    const highlightsQuery = senderIntent ? await buildHighlightsQuery(senderIntent, geminiApiKey) : undefined;
 
     const response = await fetch('https://api.exa.ai/contents', {
       method: 'POST',

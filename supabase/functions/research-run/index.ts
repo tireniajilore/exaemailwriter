@@ -207,6 +207,7 @@ serve(async (req) => {
       const fetchResult: ContentFetchResult = await fetchContent({
         urls: discoveryResult.urls,
         exaApiKey,
+        geminiApiKey,
         senderIntent
       });
 
