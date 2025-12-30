@@ -20,14 +20,27 @@ For each source above, select 1-2 verbatim snippets (50-150 words each) that are
 
 STEP B: Hook Extraction
 Using ONLY the snippets you selected in Step A, extract 1-3 specific hooks that:
-1. Reference a named project, quote, decision, or artifact
+1. Reference a credible, attributable signal connected to the person's role, trajectory, or work — even if indirect
 2. Are directly relevant to the sender's intent
 3. Have verifiable evidence from the selected snippets
+
+Examples that count:
+- "Transitioned into Product Management at Wealthfront after MBA"
+- "Engaged publicly in US MBA application discussions"
+- "Associated with Wealthfront's PM org during X initiative (even if not named owner)"
 
 CRITICAL CONSTRAINTS:
 - Do NOT invent facts not present in the snippets
 - evidenceQuotes must be copied verbatim from the sources
 - If insufficient evidence exists, return { "hooks": [] }
+
+You MUST return valid JSON only.
+If no hooks exist, return:
+{ "hooks": [] }
+Do NOT explain why.
+Do NOT include prose.
+Do NOT include markdown.
+If you cannot comply fully, still return valid JSON.
 
 OUTPUT FORMAT (JSON only):
 {

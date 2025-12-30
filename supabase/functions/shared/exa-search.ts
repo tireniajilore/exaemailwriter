@@ -36,7 +36,7 @@ export interface HookPack {
 
 export interface HookExtractionResult {
   hooks: HookPack[];
-  fallback_mode: 'sufficient' | 'minimal' | 'failed';
+  fallback_mode: 'hooks_found' | 'no_hooks_available' | 'extraction_failed';
   fallback_used?: boolean;
   fallback_reason?: string | null;
 }
@@ -695,18 +695,31 @@ CONTENT SOURCES:
 ${contentSummary}
 
 TASK: Extract 1-3 specific hooks that:
-1. Reference a named project, quote, decision, or artifact
+1. Reference a credible, attributable signal connected to the person's role, trajectory, or work — even if indirect
 2. Are directly relevant to the sender's intent
 3. Have verifiable evidence from the sources
 
+Examples that count:
+- "Transitioned into Product Management at Wealthfront after MBA"
+- "Engaged publicly in US MBA application discussions"
+- "Associated with Wealthfront's PM org during X initiative (even if not named owner)"
+
 For each hook, create:
 - id: unique identifier (hook_1, hook_2, etc.)
-- title: Short label (e.g., "Led Microsoft's AI Ethics Framework")
-- hook: The specific fact or quote (1-2 sentences)
+- title: Short label (e.g., "Transitioned to PM at Wealthfront")
+- hook: The specific fact or signal (1-2 sentences)
 - whyItWorks: Why this connects to sender's intent (1 sentence)
 - confidence: 0.0-1.0 score of how strong/relevant this hook is
 - sources: Array of {label, url} from the content above
 - evidenceQuotes: Array of {label, quote} with verbatim text from the source snippet above
+
+You MUST return valid JSON only.
+If no hooks exist, return:
+{ "hooks": [] }
+Do NOT explain why.
+Do NOT include prose.
+Do NOT include markdown.
+If you cannot comply fully, still return valid JSON.
 
 Return JSON only:
 {
@@ -762,6 +775,17 @@ Return JSON only:
     console.log(`[extractHooks] Gemini returned ${parts.length} parts, total length: ${text.length} chars`);
     console.log(`[extractHooks] Gemini finishReason: ${finishReason}`);
     console.log(`[extractHooks] First 1000 chars of response:`, text.substring(0, 1000));
+
+    // Parser guard: early exit if no JSON structure
+    if (!text.includes('{') || !text.includes('}')) {
+      console.error(`[extractHooks] Parser guard: no JSON braces found`);
+      return {
+        hooks: [],
+        fallback_mode: 'extraction_failed',
+        fallback_used: false,
+        fallback_reason: 'parser_guard'
+      };
+    }
 
     // CRITICAL FIX: Proper JSON extraction instead of greedy regex
     // The greedy regex /\{[\s\S]*\}/ matches from first { to LAST }, breaking on extra text
@@ -842,7 +866,20 @@ Return JSON only:
       console.error(`[extractHooks] No valid JSON found in response. First 500 chars:`, text.substring(0, 500));
       return {
         hooks: [],
-        fallback_mode: 'failed'
+        fallback_mode: 'extraction_failed',
+        fallback_used: false,
+        fallback_reason: 'json_parse_failed'
+      };
+    }
+
+    // Schema guard: validate hooks array
+    if (!Array.isArray(parsed.hooks)) {
+      console.error(`[extractHooks] Schema guard: hooks is not an array`, parsed);
+      return {
+        hooks: [],
+        fallback_mode: 'extraction_failed',
+        fallback_used: false,
+        fallback_reason: 'schema_guard'
       };
     }
 
@@ -906,41 +943,30 @@ Return JSON only:
           }
         }
 
-        if (fallbackParsed && fallbackParsed.hooks) {
+        if (fallbackParsed && Array.isArray(fallbackParsed.hooks)) {
           const fallbackHooks = (fallbackParsed.hooks ?? []).slice(0, 3);
           console.log(`[extractHooks] fallback_hooks=${fallbackHooks.length}`);
 
           if (fallbackHooks.length > 0) {
-            const strongHooks = fallbackHooks.filter(h => (h.confidence ?? 0) >= 0.65);
-            const decentHooks = fallbackHooks.filter(h => (h.confidence ?? 0) >= 0.5);
-
-            let fallback_mode: 'sufficient' | 'minimal' | 'failed';
-            if (strongHooks.length >= 2) fallback_mode = 'sufficient';
-            else if (decentHooks.length >= 1) fallback_mode = 'minimal';
-            else fallback_mode = 'failed';
-
-            return { hooks: fallbackHooks, fallback_mode, fallback_used: true, fallback_reason: fallbackDecision.reason };
+            return { hooks: fallbackHooks, fallback_mode: 'hooks_found', fallback_used: true, fallback_reason: fallbackDecision.reason };
+          } else {
+            return { hooks: [], fallback_mode: 'no_hooks_available', fallback_used: true, fallback_reason: fallbackDecision.reason };
           }
         }
       }
 
-      console.log(`[extractHooks] Fallback extraction failed, returning empty hooks`);
-      return { hooks: [], fallback_mode: 'failed', fallback_used: true, fallback_reason: fallbackDecision.reason };
+      console.log(`[extractHooks] Fallback extraction failed (parsing error)`);
+      return { hooks: [], fallback_mode: 'extraction_failed', fallback_used: true, fallback_reason: 'fallback_parse_failed' };
     }
 
     console.log(`[extractHooks] Extracted ${hooks.length} hooks`);
 
-    // Determine fallback mode
-    const strongHooks = hooks.filter(h => (h.confidence ?? 0) >= 0.65);
-    const decentHooks = hooks.filter(h => (h.confidence ?? 0) >= 0.5);
-
-    let fallback_mode: 'sufficient' | 'minimal' | 'failed';
-    if (strongHooks.length >= 2) {
-      fallback_mode = 'sufficient';
-    } else if (decentHooks.length >= 1) {
-      fallback_mode = 'minimal';
+    // Determine result state
+    let fallback_mode: 'hooks_found' | 'no_hooks_available' | 'extraction_failed';
+    if (hooks.length > 0) {
+      fallback_mode = 'hooks_found';
     } else {
-      fallback_mode = 'failed';
+      fallback_mode = 'no_hooks_available';
     }
 
     return {
@@ -953,9 +979,9 @@ Return JSON only:
     console.error(`[extractHooks] Error:`, error);
     return {
       hooks: [],
-      fallback_mode: 'failed',
+      fallback_mode: 'extraction_failed',
       fallback_used: false,
-      fallback_reason: null
+      fallback_reason: 'exception'
     };
   }
 }
