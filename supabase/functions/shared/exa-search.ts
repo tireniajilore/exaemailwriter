@@ -581,6 +581,9 @@ Output (3-7 words only):`;
           generationConfig: {
             temperature: 0.2,
             maxOutputTokens: 128,
+            thinkingConfig: {
+              thinkingBudget: 0, // Disable thinking tokens
+            },
           },
         }),
       }
@@ -808,6 +811,9 @@ Required output format:
           generationConfig: {
             temperature: 0.3,
             maxOutputTokens: 4000, // Increased for stability padding
+            thinkingConfig: {
+              thinkingBudget: 0, // Disable thinking tokens
+            },
           }
         })
       }
@@ -1147,6 +1153,9 @@ Required output format:
             generationConfig: {
               temperature: 0.2,
               maxOutputTokens: 5000, // Increased for fallback stability
+              thinkingConfig: {
+                thinkingBudget: 0, // Disable thinking tokens
+              },
             }
           })
         }
