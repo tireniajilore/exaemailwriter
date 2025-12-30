@@ -581,7 +581,6 @@ Output (3-7 words only):`;
           generationConfig: {
             temperature: 0.2,
             maxOutputTokens: 128,
-            thinkingBudget: 0, // Disable thinking tokens for deterministic extraction
           },
         }),
       }
@@ -809,7 +808,6 @@ Required output format:
           generationConfig: {
             temperature: 0.3,
             maxOutputTokens: 4000, // Increased for stability padding
-            thinkingBudget: 0, // Disable thinking tokens - prevents hidden token consumption
           }
         })
       }
@@ -1149,7 +1147,6 @@ Required output format:
             generationConfig: {
               temperature: 0.2,
               maxOutputTokens: 5000, // Increased for fallback stability
-              thinkingBudget: 0, // Disable thinking tokens - prevents hidden token consumption
             }
           })
         }
