@@ -132,79 +132,68 @@ async function generateSearchHypotheses(params: {
   // Compute disambiguation flag
   const forceCompany = identityConfidence !== undefined && identityConfidence < 0.8 && company?.trim().length;
 
-  const prompt = `You are generating search queries for Exa, a neural semantic search engine.
+  const prompt = `You are an expert at generating high-signal search queries for Exa.ai.
 
-IMPORTANT CONTEXT ABOUT EXA:
-Exa works best when queries describe the KIND OF DOCUMENT to retrieve,
-not abstract topics or resume-style categories.
+CONTEXT:
+Exa uses neural embeddings to match meanings.
+It performs best when queries look like Descriptive Fragments (titles, headlines, or subtitles).
 
-Good Exa queries:
-- Sound like descriptions of real articles, interviews, profiles, or essays
-- Combine: ENTITY + DOCUMENT TYPE + THEME
-- Are neutral and discovery-oriented
-
-Bad Exa queries:
-- Generic categories ("professional background", "career experience")
-- Resume bullets or asserted facts ("led", "built", "created")
-- Outreach language or vague topic labels
+BAD: Full sentences ("I want to find an interview where...")
+BAD: Keyword stuffing ("John Doe Microsoft AI Podcast")
+GOOD: "Interviews with John Doe on AI strategy and leadership"
 
 ---
-
 Recipient: ${name}
 Company: ${company}
 Role: ${role || "N/A"}
-
-Sender's Intent:
-${senderIntent}
-
+Sender's Intent: ${senderIntent}
 ---
 
 TASK
-
 Generate EXACTLY 3 Exa search queries.
 
-Each query should be written as a compact keyword-style search string,
-not a sentence. Do not use full sentences or narrative phrasing.
+Each query must be a Descriptive Fragment (6–14 words).
+Do not use full sentences. Do not use conversational filler.
 
-Each query must target a DIFFERENT TYPE of PUBLIC SIGNAL and must be
-specific enough to plausibly match the title or description of a real document.
+1) PROFESSIONAL WORK (Intent-Aligned)
+   Target: Articles about specific projects, strategies, or initiatives.
+   Instruction: Use "${senderIntent}" to identify the likely topic (e.g., security, hiring, sales, growth).
+   Structure: Focus on the specific domain or challenge.
+   Example: "initiatives involving ${name} regarding [Intent-Relevant Topic]"
 
-Generate the queries in this order:
+2) PUBLIC VOICE (Opinion/Perspective)
+   Target: Podcast episodes, conference talks, or interviews.
+   Structure: Focus on the person + a topic that plausibly overlaps with the sender's intent, without asserting that the person holds a specific view.
+   Example: "interviews with ${name} on engineering culture and scale"
 
-1) PUBLIC VOICE
-   A query that could plausibly match an interview, podcast episode,
-   talk description, or essay by ${name}.
-
-2) PROFESSIONAL WORK / COMPANY CONTEXT
-   A query that could plausibly match an article or profile describing
-   initiatives, strategy, or areas of work associated with ${name}'s role
-   or company.
-
-3) CAREER FACTS / TRANSITIONS
-   A query that could plausibly match a profile or news article describing
-   a career transition, role change, or executive appointment involving ${name}.
+3) INFLECTION POINTS (Context / "Why Now")
+   Target: Articles or news coverage describing recent changes in role, focus, scope, or direction — including role transitions, new initiatives, organizational shifts, or publicly stated next phases.
+   Structure: Headline-style descriptive fragments focused on change or transition, not static titles or achievements.
+   Examples:
+   - "${name} joins ${company} executive team as ${role}"
+   - "${name} transitions from ${company} leadership role to new ventures"
+   - "${name} shifts focus toward new product initiatives at ${company}"
+   - "${name} enters next phase leading strategy and growth at ${company}"
 
 ---
 
 CONSTRAINTS
+- Each query MUST include "${name}".
+- Each query should sound like a plausible document title or sub-header.
+- Avoid generic headers like "Professional Background" or "Career History".
+- Avoid asserting specific facts unless they are known; use domain categories instead.
 
-- Each query MUST include ${name}.
-- Include ${company} when it helps disambiguation or relevance.
-- Queries should be 8–16 words.
-- Avoid generic placeholders like "professional background" or "career history".
-- Avoid assertive verbs ("led", "built", "created").
-- Avoid article-summary verbs ("detailing", "announcing", "exploring", "impact").
-- The three queries must not be near-duplicates.
-${forceCompany ? `\nDISAMBIGUATION RULE:
-Identity confidence is below 0.8. ${name} may be ambiguous.
-Therefore, ALL THREE queries MUST include "${company}".` : ''}
+${forceCompany ? `DISAMBIGUATION:
+Identity confidence is low.
+To ensure the correct person is found, ALL 3 queries MUST explicitly include the string "${company}".` : `CONTEXT:
+Include "${company}" if it helps specify the domain.
+If "${company}" is generic, use the specific Industry or Sector terms instead.`}
 
 ---
 
 OUTPUT FORMAT
-
-Return ONLY a JSON array of 3 strings, in the order above.
-No explanations. No markdown. No extra text.`;
+Return ONLY a valid JSON array of exactly 3 strings.
+Example: ["query 1", "query 2", "query 3"]`;
 
   try {
     const response = await fetch(
