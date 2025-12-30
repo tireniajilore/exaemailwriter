@@ -163,6 +163,9 @@ TASK
 
 Generate EXACTLY 3 Exa search queries.
 
+Each query should be written as a compact keyword-style search string,
+not a sentence. Do not use full sentences or narrative phrasing.
+
 Each query must target a DIFFERENT TYPE of PUBLIC SIGNAL and must be
 specific enough to plausibly match the title or description of a real document.
 
@@ -190,6 +193,7 @@ CONSTRAINTS
 - Queries should be 8–16 words.
 - Avoid generic placeholders like "professional background" or "career history".
 - Avoid assertive verbs ("led", "built", "created").
+- Avoid article-summary verbs ("detailing", "announcing", "exploring", "impact").
 - The three queries must not be near-duplicates.
 ${forceCompany ? `\nDISAMBIGUATION RULE:
 Identity confidence is below 0.8. ${name} may be ambiguous.
