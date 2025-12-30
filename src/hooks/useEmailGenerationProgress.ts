@@ -149,12 +149,15 @@ export function useEmailGenerationProgress() {
   useEffect(() => {
     if (!currentStage.tips || currentStage.tips.length <= 1) return;
 
+    // Capture tips length to avoid stale closure issues
+    const tipsLength = currentStage.tips.length;
+
     const interval = setInterval(() => {
-      setCurrentTipIndex((prev) => (prev + 1) % (currentStage.tips?.length || 1));
+      setCurrentTipIndex((prev) => (prev + 1) % tipsLength);
     }, 8000); // Change tip every 8 seconds
 
     return () => clearInterval(interval);
-  }, [currentStage.id, currentStage.tips]);
+  }, [currentStage.id]); // Only depend on stage ID, not tips array reference
 
   // Reset tip index when stage changes
   useEffect(() => {

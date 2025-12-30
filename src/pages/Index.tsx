@@ -37,16 +37,34 @@ const Index = () => {
   const [elapsedTime, setElapsedTime] = useState(0);
 
   // NEW: Poll research status
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const pollErrorCountRef = useRef<number>(0);
+  const MAX_POLL_ERRORS = 5;
+
   useEffect(() => {
     if (!requestId || researchStatus !== 'researching') {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
         pollIntervalRef.current = null;
       }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      pollErrorCountRef.current = 0; // Reset error count when not polling
       return;
     }
 
+    // Reset error count when starting new polling session
+    pollErrorCountRef.current = 0;
+
     const pollStatus = async () => {
+      // Abort previous request if still in flight
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      abortControllerRef.current = new AbortController();
+
       try {
         const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
         const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -57,6 +75,7 @@ const Index = () => {
             headers: {
               'Authorization': `Bearer ${supabaseKey}`,
             },
+            signal: abortControllerRef.current.signal,
           }
         );
 
@@ -67,6 +86,9 @@ const Index = () => {
 
         const data = await response.json();
         console.log('Research status:', data.status, 'Hooks:', data.counts.hooks);
+
+        // Reset error count on successful poll
+        pollErrorCountRef.current = 0;
 
         // Update debug info with full research state
         setResearchDebug({
@@ -105,8 +127,25 @@ const Index = () => {
             pollIntervalRef.current = null;
           }
         }
-      } catch (err) {
+      } catch (err: any) {
+        // Ignore AbortError - it's expected when we cancel requests
+        if (err.name === 'AbortError') {
+          return;
+        }
         console.error('Poll error:', err);
+
+        // Track error count and stop polling after too many failures
+        pollErrorCountRef.current += 1;
+        if (pollErrorCountRef.current >= MAX_POLL_ERRORS) {
+          console.error(`[Polling] Too many errors (${pollErrorCountRef.current}), stopping polling`);
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+          setResearchStatus('idle');
+          setIsLoading(false);
+          toast.error('Research polling failed. Please try again.');
+        }
       }
     };
 
@@ -119,6 +158,9 @@ const Index = () => {
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
     };
   }, [requestId, researchStatus]);
@@ -140,9 +182,21 @@ const Index = () => {
     setWizardStep(3);
   };
 
+  // Track mounted state to prevent updates after unmount
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   // NEW: Handle credibility submission (Step 3 → Step 4)
   const handleCredibilitySubmit = async (data: { credibilityStory: string; sharedAffiliation?: any }) => {
     if (!selectedHook || !intentData) return;
+
+    // Capture current values to avoid stale closures
+    const currentSelectedHook = selectedHook;
+    const currentIntentData = intentData;
 
     setIsLoading(true);
     setWizardStep(4);
@@ -150,19 +204,30 @@ const Index = () => {
     try {
       const { data: emailData, error } = await supabase.functions.invoke('generate-email', {
         body: {
-          recipientName: intentData.recipientName,
-          recipientCompany: intentData.recipientCompany,
-          recipientRole: intentData.recipientRole,
-          askType: intentData.askType || 'chat',
-          reachingOutBecause: intentData.senderIntent,
+          recipientName: currentIntentData.recipientName,
+          recipientCompany: currentIntentData.recipientCompany,
+          recipientRole: currentIntentData.recipientRole,
+          askType: currentIntentData.askType || 'chat',
+          reachingOutBecause: currentIntentData.senderIntent,
           credibilityStory: data.credibilityStory,
           sharedAffiliation: data.sharedAffiliation,
-          selectedHook: selectedHook,
+          selectedHook: currentSelectedHook,
         },
       });
 
+      // Check if component still mounted
+      if (!mountedRef.current) return;
+
       if (error) {
         console.error('Email generation error:', error);
+        toast.error('Failed to generate email. Please try again.');
+        setWizardStep(3);
+        setIsLoading(false);
+        return;
+      }
+
+      if (!emailData) {
+        console.error('Email generation returned null data');
         toast.error('Failed to generate email. Please try again.');
         setWizardStep(3);
         setIsLoading(false);
@@ -189,6 +254,7 @@ const Index = () => {
         }
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       console.error('Error generating email:', err);
       toast.error('Something went wrong. Please try again.');
       setWizardStep(3);
@@ -308,9 +374,27 @@ const Index = () => {
         return;
       }
 
+      if (!researchData) {
+        console.error('Research API returned null data');
+        toast.error('Failed to start research. Please try again.');
+        setIsLoading(false);
+        setWizardStep(1);
+        setResearchStatus('idle');
+        return;
+      }
+
       if (researchData.error) {
         console.error('Research API error:', researchData.error);
         toast.error(researchData.error);
+        setIsLoading(false);
+        setWizardStep(1);
+        setResearchStatus('idle');
+        return;
+      }
+
+      if (!researchData.requestId) {
+        console.error('Research API returned no requestId');
+        toast.error('Failed to start research. Please try again.');
         setIsLoading(false);
         setWizardStep(1);
         setResearchStatus('idle');

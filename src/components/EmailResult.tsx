@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Check, Copy } from 'lucide-react';
 import type { EmailResponse } from '@/lib/prompt';
@@ -10,15 +10,41 @@ interface EmailResultProps {
 export function EmailResult({ result }: EmailResultProps) {
   const [copiedSubject, setCopiedSubject] = useState(false);
   const [copiedBody, setCopiedBody] = useState(false);
+  const subjectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const bodyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (subjectTimeoutRef.current) {
+        clearTimeout(subjectTimeoutRef.current);
+      }
+      if (bodyTimeoutRef.current) {
+        clearTimeout(bodyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const copyToClipboard = async (text: string, type: 'subject' | 'body') => {
     await navigator.clipboard.writeText(text);
     if (type === 'subject') {
       setCopiedSubject(true);
-      setTimeout(() => setCopiedSubject(false), 2000);
+
+      // Clear existing timeout if any
+      if (subjectTimeoutRef.current) {
+        clearTimeout(subjectTimeoutRef.current);
+      }
+
+      subjectTimeoutRef.current = setTimeout(() => setCopiedSubject(false), 2000);
     } else {
       setCopiedBody(true);
-      setTimeout(() => setCopiedBody(false), 2000);
+
+      // Clear existing timeout if any
+      if (bodyTimeoutRef.current) {
+        clearTimeout(bodyTimeoutRef.current);
+      }
+
+      bodyTimeoutRef.current = setTimeout(() => setCopiedBody(false), 2000);
     }
   };
 

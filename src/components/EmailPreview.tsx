@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Check } from 'lucide-react';
@@ -27,11 +27,27 @@ export function EmailPreview({
   selectedHook,
 }: EmailPreviewProps) {
   const [copiedBody, setCopiedBody] = useState(false);
+  const copyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const copyToClipboard = async (text: string, type: 'subject' | 'body') => {
     await navigator.clipboard.writeText(text);
     setCopiedBody(true);
-    setTimeout(() => setCopiedBody(false), 2000);
+
+    // Clear existing timeout if any
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+    }
+
+    copyTimeoutRef.current = setTimeout(() => setCopiedBody(false), 2000);
   };
 
   return (

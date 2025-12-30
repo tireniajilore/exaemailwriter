@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ProlificLayout } from '@/components/prolific/ProlificLayout';
 import { Button } from '@/components/ui/button';
@@ -75,10 +75,11 @@ export default function ProlificSurvey() {
   const navigate = useNavigate();
   const { data, setCurrentStep, setGeneratedEmail, generatedEmail } = useProlific();
   const { toast } = useToast();
-  
+
   // Completion dialog state
   const [showCompletionDialog, setShowCompletionDialog] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
+  const copyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Q1
   const [comparisonRating, setComparisonRating] = useState('');
@@ -193,11 +194,26 @@ export default function ProlificSurvey() {
     }
   };
 
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleCopyCode = async () => {
     try {
       await navigator.clipboard.writeText(PROLIFIC_COMPLETION_CODE);
       setCodeCopied(true);
-      setTimeout(() => setCodeCopied(false), 2000);
+
+      // Clear existing timeout if any
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+
+      copyTimeoutRef.current = setTimeout(() => setCodeCopied(false), 2000);
     } catch {
       toast({
         title: 'Copy failed',

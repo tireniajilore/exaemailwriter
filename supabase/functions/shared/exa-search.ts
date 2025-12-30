@@ -83,7 +83,18 @@ export async function verifyIdentity(params: {
       };
     }
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      console.error('[verifyIdentity] JSON parse error:', error);
+      return {
+        identityDecision: 'FAIL',
+        confidence: 0,
+        results: []
+      };
+    }
+
     const results = (data.results ?? []).map((r: any) => ({
       url: r.url ?? '',
       title: r.title ?? '',
@@ -229,10 +240,28 @@ Example: ["query 1", "query 2", "query 3"]`;
       ];
     }
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      console.error('[generateSearchHypotheses] JSON parse error:', error);
+      return [
+        `${name} ${company} ${role ?? ''} projects`,
+        `${name} ${company} recent work`,
+        `${name} ${company} leadership`
+      ];
+    }
 
     // CRITICAL FIX: Concatenate ALL parts, not just the first one
     const parts = data.candidates?.[0]?.content?.parts ?? [];
+    if (!Array.isArray(parts)) {
+      console.error('[generateSearchHypotheses] Invalid response structure - parts not an array');
+      return [
+        `${name} ${company} ${role ?? ''} projects`,
+        `${name} ${company} recent work`,
+        `${name} ${company} leadership`
+      ];
+    }
     const text = parts.map((part: any) => part.text ?? '').join('');
     const finishReason = data.candidates?.[0]?.finishReason ?? 'UNKNOWN';
 
@@ -635,7 +664,14 @@ export async function fetchContent(params: {
       return { docs: [], fetchedCount: 0 };
     }
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      console.error('[fetchContent] JSON parse error:', error);
+      return { docs: [], fetchedCount: 0 };
+    }
+
     const results = data.results ?? [];
 
     const docs: FetchedDocument[] = results.map((r: any) => ({
@@ -643,7 +679,7 @@ export async function fetchContent(params: {
       title: r.title ?? '',
       text: r.text ?? '',
       highlights: Array.isArray(r.highlights) ? r.highlights : []
-    })).filter((d: FetchedDocument) => d.text && d.text.length > 100);
+    })).filter((d: FetchedDocument) => typeof d.text === 'string' && d.text.length > 100);
 
     const avgTextChars = docs.length > 0 ? Math.round(docs.reduce((sum, d) => sum + d.text.length, 0) / docs.length) : 0;
     const totalHighlightsChars = docs.reduce((sum, d) => sum + (d.highlights || []).join(' ').length, 0);
@@ -889,8 +925,23 @@ Required output format:
       };
     }
 
-    const hooks: HookPack[] = (parsed.hooks ?? []).slice(0, 3);
-    console.log(`[extractHooks] Successfully parsed ${hooks.length} hooks from JSON`);
+    // Validate hook elements
+    const validHooks = (parsed.hooks ?? []).filter((h: any) =>
+      h && typeof h === 'object' &&
+      typeof h.id === 'string' &&
+      typeof h.title === 'string' &&
+      typeof h.hook === 'string' &&
+      typeof h.confidence === 'number' &&
+      Array.isArray(h.sources) &&
+      Array.isArray(h.evidenceQuotes)
+    );
+
+    if (validHooks.length < parsed.hooks.length) {
+      console.warn(`[extractHooks] Filtered out ${parsed.hooks.length - validHooks.length} invalid hooks`);
+    }
+
+    const hooks: HookPack[] = validHooks.slice(0, 3);
+    console.log(`[extractHooks] Successfully parsed ${hooks.length} valid hooks from JSON`);
 
     // Calculate highlights chars for fallback decision
     const { totalHighlightsChars, shouldUseFallback } = await import('./research-fallback.ts');
@@ -938,14 +989,22 @@ Required output format:
           }
           if (lastClose !== -1) {
             const jsonStr = fallbackText.substring(firstBrace, lastClose + 1);
-            try { fallbackParsed = JSON.parse(jsonStr); } catch {}
+            try {
+              fallbackParsed = JSON.parse(jsonStr);
+            } catch (e) {
+              console.error('[extractHooks] Fallback JSON parse failed:', e);
+            }
           }
         }
 
         if (!fallbackParsed) {
           const match = fallbackText.match(/```json\s*(\{[\s\S]*?\})\s*```/);
           if (match) {
-            try { fallbackParsed = JSON.parse(match[1]); } catch {}
+            try {
+              fallbackParsed = JSON.parse(match[1]);
+            } catch (e) {
+              console.error('[extractHooks] Fallback code block JSON parse failed:', e);
+            }
           }
         }
 

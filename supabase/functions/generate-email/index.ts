@@ -307,23 +307,29 @@ const EXA_RESEARCH_OUTPUT_SCHEMA = {
 
 // Helper to map flattened Exa output back to internal HookPack type
 function mapFlatHookPackToInternal(flat: Record<string, unknown>): HookPack {
-  const intentFit = (flat.score_intent_fit as number) || 0;
+  // Runtime type validation instead of unsafe type assertions
+  const intentFit = typeof flat.score_intent_fit === 'number' ? flat.score_intent_fit : 0;
+
   return {
     hook_fact: {
-      claim: (flat.claim as string) || "",
-      source_url: (flat.source_url as string) || "",
-      evidence: (flat.evidence as string) || "",
-      evidence_type: (flat.evidence_type as EvidenceType) || "quote",
+      claim: typeof flat.claim === 'string' ? flat.claim : (flat.claim != null ? String(flat.claim) : ""),
+      source_url: typeof flat.source_url === 'string' ? flat.source_url : (flat.source_url != null ? String(flat.source_url) : ""),
+      evidence: typeof flat.evidence === 'string' ? flat.evidence : (flat.evidence != null ? String(flat.evidence) : ""),
+      evidence_type: (typeof flat.evidence_type === 'string' && ['quote', 'data_point', 'public_signal'].includes(flat.evidence_type))
+        ? (flat.evidence_type as EvidenceType)
+        : "quote",
     },
     bridge: {
-      bridge_angle: (flat.bridge_angle as BridgeAngle) || "domain",
-      why_relevant: (flat.why_relevant as string) || "",
+      bridge_angle: (typeof flat.bridge_angle === 'string' && ['domain', 'trajectory', 'identity'].includes(flat.bridge_angle))
+        ? (flat.bridge_angle as BridgeAngle)
+        : "domain",
+      why_relevant: typeof flat.why_relevant === 'string' ? flat.why_relevant : (flat.why_relevant != null ? String(flat.why_relevant) : ""),
       like_you_ingredients: {
-        shared_axis: (flat.shared_axis as string) || "",
-        shared_action: (flat.shared_action as string) || "",
-        shared_stakes: (flat.shared_stakes as string) || "",
+        shared_axis: typeof flat.shared_axis === 'string' ? flat.shared_axis : (flat.shared_axis != null ? String(flat.shared_axis) : ""),
+        shared_action: typeof flat.shared_action === 'string' ? flat.shared_action : (flat.shared_action != null ? String(flat.shared_action) : ""),
+        shared_stakes: typeof flat.shared_stakes === 'string' ? flat.shared_stakes : (flat.shared_stakes != null ? String(flat.shared_stakes) : ""),
       },
-      intent_theme: (flat.intent_theme as string) || "",
+      intent_theme: typeof flat.intent_theme === 'string' ? flat.intent_theme : (flat.intent_theme != null ? String(flat.intent_theme) : ""),
     },
     scores: {
       // Simplified scoring: we only have score_intent_fit now

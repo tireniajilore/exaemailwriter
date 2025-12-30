@@ -87,6 +87,17 @@ serve(async (req) => {
       );
     }
 
+    if (!data?.id) {
+      console.error('[POST /research] Database insert returned no ID');
+      return new Response(
+        JSON.stringify({ error: 'Failed to create research job - no ID returned' }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      );
+    }
+
     const requestId = data.id;
     console.log(`[POST /research] Created job ${requestId}, starting research immediately`);
 
@@ -301,13 +312,21 @@ async function executeResearch(
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    await supabaseClient
-      .from('research_jobs')
-      .update({
-        status: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-        partial: true
-      })
-      .eq('id', requestId);
+    try {
+      const { error: updateError } = await supabaseClient
+        .from('research_jobs')
+        .update({
+          status: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+          partial: true
+        })
+        .eq('id', requestId);
+
+      if (updateError) {
+        console.error('[executeResearch] Failed to update job status to failed:', updateError);
+      }
+    } catch (updateErr) {
+      console.error('[executeResearch] Error while updating job to failed status:', updateErr);
+    }
   }
 }

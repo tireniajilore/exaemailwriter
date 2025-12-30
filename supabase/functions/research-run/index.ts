@@ -56,7 +56,7 @@ serve(async (req) => {
         Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
       );
 
-      await supabaseClient
+      const { error: updateError } = await supabaseClient
         .from('research_jobs')
         .update({
           status: 'failed',
@@ -65,6 +65,10 @@ serve(async (req) => {
           fallback_mode: 'failed'
         })
         .eq('id', requestId);
+
+      if (updateError) {
+        console.error('[research-run] Failed to update job status:', updateError);
+      }
 
       return new Response(
         JSON.stringify({ error: 'Server configuration error: Missing API keys' }),
@@ -106,7 +110,7 @@ serve(async (req) => {
     const credibilityStory = job.credibility_story ?? undefined;
 
     // Helper function to update job status
-    async function updateJob(updates: any) {
+    async function updateJob(updates: any): Promise<boolean> {
       const { error } = await supabaseClient
         .from('research_jobs')
         .update(updates)
@@ -114,7 +118,9 @@ serve(async (req) => {
 
       if (error) {
         console.error('[research-run] Failed to update job:', error);
+        return false;
       }
+      return true;
     }
 
     try {
