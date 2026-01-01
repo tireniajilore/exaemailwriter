@@ -139,77 +139,88 @@ async function generateSearchHypotheses(params: {
   if (!senderIntent) {
     // Fall back to basic searches if we don't have sender's intent
     return [
-      `${name} ${company} ${role ?? ''} projects background`,
-      `${name} ${company} recent work`,
-      `${name} ${company} interview podcast article`
+      `podcast interview with ${name} at ${company}`,
+      `${name} LinkedIn post about work at ${company}`,
+      `${name} launches initiative at ${company}`,
+      `${name} speaking at conference panel`,
+      `${name} joins ${company} as ${role ?? 'executive'}`
     ];
   }
 
   // Compute disambiguation flag
   const forceCompany = identityConfidence !== undefined && identityConfidence < 0.8 && company?.trim().length;
 
-  const prompt = `You are an expert at generating high-signal search queries for Exa.ai.
+  const prompt = `You are an expert at generating search queries that find CONCRETE EVIDENCE of a person's work, voice, and presence.
 
-CONTEXT:
-Exa uses neural embeddings to match meanings.
-It performs best when queries look like Descriptive Fragments (titles, headlines, or subtitles).
-
-BAD: Full sentences ("I want to find an interview where...")
-BAD: Keyword stuffing ("John Doe Microsoft AI Podcast")
-GOOD: "Interviews with John Doe on AI strategy and leadership"
+EVIDENCE means a specific artifact that plausibly exists as a page, recording, post, or announcement — not a topic summary.
 
 ---
+
+CONTEXT:
 Recipient: ${name}
 Company: ${company}
 Role: ${role || "N/A"}
 Sender's Intent: ${senderIntent}
+
+---
+
+FIXED EVIDENCE TYPES (GENERATE ONE QUERY EACH)
+
+1) LONG-FORM VOICE
+   Artifacts: podcast interview, keynote transcript, long interview, op-ed
+   Example: "podcast interview with ${name} about [lens term]"
+
+2) SHORT-FORM VOICE
+   Artifacts: LinkedIn post, blog post, written reflection, essay
+   Example: "${name} LinkedIn post discussing [lens term]"
+
+3) ACTION
+   Artifacts: product or program launch, initiative led, project shipped
+   Example: "${name} launches [lens term] program at ${company}"
+
+4) PRESENCE
+   Artifacts: conference speaking, panel participation, event appearance
+   Example: "${name} speaking at [lens term] conference panel"
+
+5) CONTEXT / INFLECTION
+   Artifacts: role change, new scope, transition, next phase
+   Example: "${name} promoted to ${role || 'new role'} at ${company}"
+
 ---
 
 TASK
-Generate EXACTLY 3 Exa search queries.
 
-Each query must be a Descriptive Fragment (6–14 words).
-Do not use full sentences. Do not use conversational filler.
+1. Lightly extract 1–2 **lens terms** from the sender's intent (domain, problem, or context).
+   Do NOT infer opinions, beliefs, or motivations.
+   Do NOT use abstract nouns like "strategy", "initiatives", "perspectives".
 
-1) PROFESSIONAL WORK (Intent-Aligned)
-   Target: Articles about specific projects, strategies, or initiatives.
-   Instruction: Use "${senderIntent}" to identify the likely topic (e.g., security, hiring, sales, growth).
-   Structure: Focus on the specific domain or challenge.
-   Example: "initiatives involving ${name} regarding [Intent-Relevant Topic]"
+2. Generate EXACTLY 5 search queries — one per evidence type above.
 
-2) PUBLIC VOICE (Opinion/Perspective)
-   Target: Podcast episodes, conference talks, or interviews.
-   Structure: Focus on the person + a topic that plausibly overlaps with the sender's intent, without asserting that the person holds a specific view.
-   Example: "interviews with ${name} on engineering culture and scale"
+3. Each query MUST:
+   - include "${name}"
+   - include an explicit artifact keyword (podcast, keynote, LinkedIn post, launch, panel, etc.)
+   - be 6–14 words
+   - read like a plausible article title or sub-header
+   - use concrete artifact types, not abstract topics
 
-3) INFLECTION POINTS (Context / "Why Now")
-   Target: Articles or news coverage describing recent changes in role, focus, scope, or direction — including role transitions, new initiatives, organizational shifts, or publicly stated next phases.
-   Structure: Headline-style descriptive fragments focused on change or transition, not static titles or achievements.
-   Examples:
-   - "${name} joins ${company} executive team as ${role}"
-   - "${name} transitions from ${company} leadership role to new ventures"
-   - "${name} shifts focus toward new product initiatives at ${company}"
-   - "${name} enters next phase leading strategy and growth at ${company}"
+4. If strong evidence for a type is unlikely:
+   - generate the most conservative plausible query
+   - do NOT invent specificity
+   - do NOT pad with generic leadership language
 
----
-
-CONSTRAINTS
-- Each query MUST include "${name}".
-- Each query should sound like a plausible document title or sub-header.
-- Avoid generic headers like "Professional Background" or "Career History".
-- Avoid asserting specific facts unless they are known; use domain categories instead.
-
-${forceCompany ? `DISAMBIGUATION:
+${forceCompany ? `
+DISAMBIGUATION:
 Identity confidence is low.
-To ensure the correct person is found, ALL 3 queries MUST explicitly include the string "${company}".` : `CONTEXT:
-Include "${company}" if it helps specify the domain.
-If "${company}" is generic, use the specific Industry or Sector terms instead.`}
+To ensure the correct person is found, ALL 5 queries MUST explicitly include the string "${company}".` : `
+CONTEXT:
+Include "${company}" if it helps specify the domain or disambiguate the person.
+If "${company}" is generic, use specific industry terms instead.`}
 
 ---
 
 OUTPUT FORMAT
-Return ONLY a valid JSON array of exactly 3 strings.
-Example: ["query 1", "query 2", "query 3"]`;
+Return ONLY a valid JSON array of exactly 5 strings.
+Example: ["query 1", "query 2", "query 3", "query 4", "query 5"]`;
 
   try {
     const response = await fetch(
@@ -224,8 +235,11 @@ Example: ["query 1", "query 2", "query 3"]`;
             parts: [{ text: prompt }]
           }],
           generationConfig: {
-            temperature: 0.7,
+            temperature: 0.5,
             maxOutputTokens: 2048,
+            thinkingConfig: {
+              thinkingBudget: 0, // Disable thinking tokens
+            }
           }
         })
       }
@@ -234,9 +248,11 @@ Example: ["query 1", "query 2", "query 3"]`;
     if (!response.ok) {
       console.error(`[generateSearchHypotheses] Gemini error: ${response.status}`);
       return [
-        `${name} ${company} ${role ?? ''} projects`,
-        `${name} ${company} recent work`,
-        `${name} ${company} leadership`
+        `podcast interview with ${name} at ${company}`,
+        `${name} LinkedIn post about work at ${company}`,
+        `${name} launches initiative at ${company}`,
+        `${name} speaking at conference panel`,
+        `${name} joins ${company} as ${role ?? 'executive'}`
       ];
     }
 
@@ -246,9 +262,11 @@ Example: ["query 1", "query 2", "query 3"]`;
     } catch (error) {
       console.error('[generateSearchHypotheses] JSON parse error:', error);
       return [
-        `${name} ${company} ${role ?? ''} projects`,
-        `${name} ${company} recent work`,
-        `${name} ${company} leadership`
+        `podcast interview with ${name} at ${company}`,
+        `${name} LinkedIn post about work at ${company}`,
+        `${name} launches initiative at ${company}`,
+        `${name} speaking at conference panel`,
+        `${name} joins ${company} as ${role ?? 'executive'}`
       ];
     }
 
@@ -257,9 +275,11 @@ Example: ["query 1", "query 2", "query 3"]`;
     if (!Array.isArray(parts)) {
       console.error('[generateSearchHypotheses] Invalid response structure - parts not an array');
       return [
-        `${name} ${company} ${role ?? ''} projects`,
-        `${name} ${company} recent work`,
-        `${name} ${company} leadership`
+        `podcast interview with ${name} at ${company}`,
+        `${name} LinkedIn post about work at ${company}`,
+        `${name} launches initiative at ${company}`,
+        `${name} speaking at conference panel`,
+        `${name} joins ${company} as ${role ?? 'executive'}`
       ];
     }
     const text = parts.map((part: any) => part.text ?? '').join('');
@@ -341,30 +361,55 @@ Example: ["query 1", "query 2", "query 3"]`;
     if (!hypotheses) {
       console.error(`[generateSearchHypotheses] No valid JSON array found. First 300 chars:`, text.substring(0, 300));
       return [
-        `${name} ${company} ${role ?? ''} projects`,
-        `${name} ${company} recent work`,
-        `${name} ${company} leadership`
+        `podcast interview with ${name} at ${company}`,
+        `${name} LinkedIn post about work at ${company}`,
+        `${name} launches initiative at ${company}`,
+        `${name} speaking at conference panel`,
+        `${name} joins ${company} as ${role ?? 'executive'}`
       ];
     }
 
     if (!Array.isArray(hypotheses) || hypotheses.length === 0) {
       console.error(`[generateSearchHypotheses] Invalid hypotheses format`);
       return [
-        `${name} ${company} ${role ?? ''} projects`,
-        `${name} ${company} recent work`,
-        `${name} ${company} leadership`
+        `podcast interview with ${name} at ${company}`,
+        `${name} LinkedIn post about work at ${company}`,
+        `${name} launches initiative at ${company}`,
+        `${name} speaking at conference panel`,
+        `${name} joins ${company} as ${role ?? 'executive'}`
       ];
     }
 
     console.log(`[generateSearchHypotheses] Generated ${hypotheses.length} hypotheses:`, hypotheses);
-    return hypotheses.slice(0, 3);
+
+    // Test lens term extraction: verify artifact keywords are present
+    const artifactKeywords = [
+      'podcast', 'interview', 'keynote', 'transcript', 'op-ed',
+      'LinkedIn', 'blog post', 'essay', 'reflection',
+      'launch', 'initiative', 'program', 'project',
+      'speaking', 'panel', 'conference', 'event',
+      'join', 'transition', 'promote', 'role', 'new scope'
+    ];
+
+    hypotheses.forEach((query, i) => {
+      const lowerQuery = query.toLowerCase();
+      const foundKeywords = artifactKeywords.filter(kw => lowerQuery.includes(kw.toLowerCase()));
+      console.log(`[generateSearchHypotheses] Query ${i + 1} artifact keywords: [${foundKeywords.join(', ')}]`);
+      if (foundKeywords.length === 0) {
+        console.warn(`[generateSearchHypotheses] Query ${i + 1} missing artifact keywords: "${query}"`);
+      }
+    });
+
+    return hypotheses.slice(0, 5);
 
   } catch (error) {
     console.error(`[generateSearchHypotheses] Error:`, error);
     return [
-      `${name} ${company} ${role ?? ''} projects`,
-      `${name} ${company} recent work`,
-      `${name} ${company} leadership`
+      `podcast interview with ${name} at ${company}`,
+      `${name} LinkedIn post about work at ${company}`,
+      `${name} launches initiative at ${company}`,
+      `${name} speaking at conference panel`,
+      `${name} joins ${company} as ${role ?? 'executive'}`
     ];
   }
 }
@@ -410,7 +455,7 @@ export async function discoverContent(params: {
         },
         body: JSON.stringify({
           query: search.query,
-          numResults: 5,
+          numResults: 4,
           type: 'neural',
           useAutoprompt: true
         })
