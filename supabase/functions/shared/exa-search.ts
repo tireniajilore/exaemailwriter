@@ -1,4 +1,5 @@
 // Exa Search + Contents API implementation for phased research
+import { discoverContentWithAutoprompt } from './discovery-autoprompt.ts';
 
 export interface IdentityResult {
   identityDecision: 'PASS' | 'FAIL';
@@ -418,7 +419,7 @@ Example: ["query 1", "query 2", "query 3", "query 4", "query 5"]`;
   }
 }
 
-// Phase 2: Content Discovery
+// Phase 2: Content Discovery (with improved autoprompt + scoring)
 export async function discoverContent(params: {
   name: string;
   company: string;
@@ -444,75 +445,36 @@ export async function discoverContent(params: {
     identityConfidence
   });
 
-  const searches = hypotheses.map((query, i) => ({
-    query,
-    label: `hypothesis_${i + 1}`
+  // Use improved autoprompt-based discovery with scoring
+  const discoveryResult = await discoverContentWithAutoprompt({
+    name,
+    company,
+    role,
+    senderIntent: senderIntent || '',
+    exaApiKey,
+    geminiApiKey,
+    hypotheses
+  });
+
+  // Log debug info
+  console.log(`[discoverContent] Topics extracted:`, discoveryResult.debug.topics);
+  console.log(`[discoverContent] Dropped ${discoveryResult.debug.dropped.length} URLs`);
+  console.log(`[discoverContent] Top 5 scores:`, discoveryResult.debug.topScores.slice(0, 5));
+
+  // Convert to expected format
+  const urls = discoveryResult.urls.map((r, i) => ({
+    id: r.url,
+    url: r.url,
+    title: r.title,
+    score: discoveryResult.debug.topScores.find(s => s.url === r.url)?.score ?? 0,
+    source: r.source
   }));
 
-  try {
-    const searchPromises = searches.map(async (search) => {
-      const response = await fetch('https://api.exa.ai/search', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${exaApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          query: search.query,
-          numResults: 4,
-          type: 'neural',
-          useAutoprompt: true
-        })
-      });
-
-      if (!response.ok) {
-        console.error(`[discoverContent] ${search.label} search failed: ${response.status}`);
-        return [];
-      }
-
-      const data = await response.json();
-      return (data.results ?? []).map((r: any) => ({
-        id: r.id ?? r.url,
-        url: r.url ?? '',
-        title: r.title ?? '',
-        score: r.score ?? 0,
-        source: search.label
-      }));
-    });
-
-    const allResults = await Promise.all(searchPromises);
-    const flatResults = allResults.flat();
-
-    console.log(`[discoverContent] Found ${flatResults.length} total results`);
-
-    // Deduplicate by URL
-    const urlMap = new Map<string, any>();
-    flatResults.forEach(result => {
-      if (result.url && !urlMap.has(result.url)) {
-        urlMap.set(result.url, result);
-      }
-    });
-
-    const uniqueResults = Array.from(urlMap.values());
-
-    // Sort by score and take top 5-8
-    const topResults = uniqueResults
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, 8);
-
-    return {
-      urls: topResults,
-      foundCount: uniqueResults.length,
-      hypotheses
-    };
-  } catch (error) {
-    console.error(`[discoverContent] Error:`, error);
-    return {
-      urls: [],
-      foundCount: 0,
-      hypotheses: []
-    };
-  }
+  return {
+    urls,
+    foundCount: discoveryResult.urls.length,
+    hypotheses
+  };
 }
 
 // Extract top 6-10 intent keywords from sender intent
