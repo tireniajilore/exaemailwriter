@@ -221,18 +221,38 @@ serve(async (req) => {
 
       console.log(`[research-run] Fetched ${fetchResult.fetchedCount} documents`);
 
-      // If no content fetched, fail
+      // If no content fetched (all filtered as industry_generic), use identity-only fallback
       if (fetchResult.docs.length === 0) {
+        console.log(`[research-run] All ${fetchResult.filteredCount || 0} docs filtered (no mentions). Using identity fallback.`);
+
+        // Create identity-only hook (Option 4: Hybrid fallback)
+        const identityHook = {
+          id: "hook_identity_fallback",
+          title: `${role || 'Professional'} at ${company}`,
+          hook: `${name} is ${role ? `${role} at` : 'affiliated with'} ${company}.`,
+          whyItWorks: `Establishes basic context. Note: No detailed public information found about ${name}.`,
+          confidence: 0.15,
+          strength: "tier3" as const,
+          weaknessNote: `No online content found mentioning ${name}. This hook is based solely on identity verification.`,
+          sources: [{ label: "Identity Verification", url: "" }],
+          evidenceQuotes: [{
+            label: "Exa Search",
+            quote: `Identity verified for ${name} at ${company}`
+          }]
+        };
+
         await updateJob({
-          status: 'failed',
-          error: `Could not fetch content for ${name}`,
-          progress: { phase: 3, total: 4, label: 'Content fetch failed' },
-          partial: true, // We have URLs but no content
-          fallback_mode: 'failed'
+          status: 'complete',
+          hooks: [identityHook],
+          partial: true,
+          fallback_mode: 'no_mentions_found',
+          progress: { phase: 4, total: 4, label: 'Complete (limited info)' }
         });
 
+        console.log(`[research-run] Completed with identity-only fallback`);
+
         return new Response(
-          JSON.stringify({ success: false, error: 'Content fetch failed' }),
+          JSON.stringify({ success: true, requestId, hookCount: 1, fallback: true }),
           {
             status: 200,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }
