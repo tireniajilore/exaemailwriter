@@ -23,6 +23,16 @@ Using ONLY the snippets you selected in Step A, extract hooks.
 
 A valid hook is any specific, verifiable signal that is credibly attributable to the person's role, trajectory, professional focus, public engagement, or organizational association.
 
+CRITICAL REQUIREMENT - Source Mentions:
+- EVERY hook MUST be about ${name} specifically OR about ${company} in relation to ${name}'s role
+- evidenceQuotes MUST reference ${name} by name OR ${company} in a way that connects to ${name}
+- Generic industry advice that doesn't mention ${name} or ${company} is NOT valid
+- If a source doesn't mention ${name} or ${company}, DO NOT use it
+
+Source Types (already filtered for you):
+- person_specific: Sources that mention ${name} by name (highest quality)
+- company_specific: Sources about ${company} (useful for context about their work environment)
+
 Important rules:
 - Attribution may be direct OR indirect.
 - The signal does NOT need to be authored by the person.
@@ -34,19 +44,26 @@ DEGRADATION LADDER (you MUST return at least 1 hook):
 
 Tier 1 — Intent-aligned hooks (preferred):
 - Directly matches sender's intent
-- Evidence-grounded
-- Confidence: 0.7–1.0
+- Evidence-grounded from person_specific or company_specific sources
+- Confidence: 0.7–1.0 for person_specific sources, 0.5–0.7 for company_specific
 
 Tier 2 — Adjacent hooks (if Tier 1 yields 0):
 - About recipient's background, leadership, domain, or public work
 - Loosely adjacent to sender intent
-- Evidence-grounded
-- Confidence: 0.35–0.65
+- Evidence-grounded from person_specific or company_specific sources
+- Confidence: 0.35–0.65 for person_specific sources, 0.25–0.5 for company_specific
 
 Tier 3 — Identity/role hooks (if Tier 2 yields 0):
 - What they do, their remit, or notable "about" facts
-- Evidence-grounded
-- Confidence: 0.15–0.35
+- Evidence-grounded from person_specific or company_specific sources
+- Confidence: 0.15–0.35 for person_specific sources, 0.1–0.25 for company_specific
+
+CONFIDENCE SCORING:
+confidence = strength of evidence that this hook is TRUE about ${name}
+- 0.8-1.0: Direct quote mentioning ${name} by name with specific details
+- 0.5-0.7: ${name} mentioned + context, OR ${company} context directly related to ${name}'s role
+- 0.3-0.5: ${company} information that provides context for ${name}'s work
+- <0.3: Weak connection (avoid unless tier3 fallback)
 
 You MUST return at least 1 hook. If you cannot find Tier 1, use Tier 2. If you cannot find Tier 2, use Tier 3.
 

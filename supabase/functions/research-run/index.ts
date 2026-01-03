@@ -214,7 +214,9 @@ serve(async (req) => {
         urls: discoveryResult.urls,
         exaApiKey,
         geminiApiKey,
-        senderIntent
+        senderIntent,
+        name,
+        company
       });
 
       console.log(`[research-run] Fetched ${fetchResult.fetchedCount} documents`);

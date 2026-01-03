@@ -12,16 +12,20 @@ export interface ContentDiscoveryResult {
   hypotheses?: string[];
 }
 
+export type SourceType = 'person_specific' | 'company_specific' | 'industry_generic';
+
 export interface FetchedDocument {
   url: string;
   title: string;
   text: string;
   highlights?: string[];
+  sourceType?: SourceType;
 }
 
 export interface ContentFetchResult {
   docs: FetchedDocument[];
   fetchedCount: number;
+  filteredCount?: number; // How many docs were filtered out
 }
 
 export interface HookPack {
@@ -666,8 +670,10 @@ export async function fetchContent(params: {
   exaApiKey: string;
   geminiApiKey: string;
   senderIntent?: string;
+  name: string;
+  company: string;
 }): Promise<ContentFetchResult> {
-  const { urls, exaApiKey, geminiApiKey, senderIntent } = params;
+  const { urls, exaApiKey, geminiApiKey, senderIntent, name, company } = params;
 
   if (!urls || urls.length === 0) {
     return { docs: [], fetchedCount: 0 };
@@ -722,21 +728,60 @@ export async function fetchContent(params: {
 
     const results = data.results ?? [];
 
-    const docs: FetchedDocument[] = results.map((r: any) => ({
+    // Helper function to determine source type based on mention analysis
+    const scoreSourceType = (text: string, title: string): SourceType => {
+      const textLower = text.toLowerCase();
+      const titleLower = title.toLowerCase();
+      const nameLower = name.toLowerCase();
+      const companyLower = company.toLowerCase();
+
+      // Check if the person's name is mentioned in text or title
+      if (textLower.includes(nameLower) || titleLower.includes(nameLower)) {
+        return 'person_specific';
+      }
+
+      // Check if the company is mentioned
+      if (textLower.includes(companyLower) || titleLower.includes(companyLower)) {
+        return 'company_specific';
+      }
+
+      // Neither person nor company mentioned - generic content
+      return 'industry_generic';
+    };
+
+    // Map results and add sourceType
+    const allDocs: FetchedDocument[] = results.map((r: any) => ({
       url: r.url ?? '',
       title: r.title ?? '',
       text: r.text ?? '',
-      highlights: Array.isArray(r.highlights) ? r.highlights : []
+      highlights: Array.isArray(r.highlights) ? r.highlights : [],
+      sourceType: scoreSourceType(r.text ?? '', r.title ?? '')
     })).filter((d: FetchedDocument) => typeof d.text === 'string' && d.text.length > 100);
+
+    // Filter out industry_generic sources (Option B+: keep person_specific and company_specific)
+    const beforeFilterCount = allDocs.length;
+    const docs = allDocs.filter(doc => doc.sourceType !== 'industry_generic');
+    const filteredCount = beforeFilterCount - docs.length;
+
+    // Log filtering results
+    const personSpecificCount = docs.filter(d => d.sourceType === 'person_specific').length;
+    const companySpecificCount = docs.filter(d => d.sourceType === 'company_specific').length;
+
+    console.log(`[fetchContent] Source type breakdown: person_specific=${personSpecificCount}, company_specific=${companySpecificCount}, industry_generic=${filteredCount} (filtered out)`);
+
+    if (filteredCount > 0) {
+      console.log(`[fetchContent] Filtered out ${filteredCount} industry_generic docs that don't mention "${name}" or "${company}"`);
+    }
 
     const avgTextChars = docs.length > 0 ? Math.round(docs.reduce((sum, d) => sum + d.text.length, 0) / docs.length) : 0;
     const totalHighlightsChars = docs.reduce((sum, d) => sum + (d.highlights || []).join(' ').length, 0);
 
-    console.log(`[fetchContent] Successfully fetched ${docs.length} documents, avg_text_chars=${avgTextChars}, total_highlights_chars=${totalHighlightsChars}`);
+    console.log(`[fetchContent] Successfully fetched ${docs.length} documents (${beforeFilterCount} before filtering), avg_text_chars=${avgTextChars}, total_highlights_chars=${totalHighlightsChars}`);
 
     return {
       docs,
-      fetchedCount: docs.length
+      fetchedCount: docs.length,
+      filteredCount
     };
   } catch (error) {
     console.error(`[fetchContent] Error:`, error);
@@ -776,6 +821,16 @@ ${contentSummary}
 
 A valid hook is any specific, verifiable signal that is credibly attributable to the person's role, trajectory, professional focus, public engagement, or organizational association.
 
+CRITICAL REQUIREMENT - Source Mentions:
+- EVERY hook MUST be about ${name} specifically OR about ${company} in relation to ${name}'s role
+- evidenceQuotes MUST reference ${name} by name OR ${company} in a way that connects to ${name}
+- Generic industry advice that doesn't mention ${name} or ${company} is NOT valid
+- If a source doesn't mention ${name} or ${company}, DO NOT use it
+
+Source Types (already filtered for you):
+- person_specific: Sources that mention ${name} by name (highest quality)
+- company_specific: Sources about ${company} (useful for context about their work environment)
+
 Important rules:
 - Attribution may be direct OR indirect.
 - The signal does NOT need to be authored by the person.
@@ -787,19 +842,26 @@ DEGRADATION LADDER (you MUST return at least 1 hook):
 
 Tier 1 — Intent-aligned hooks (preferred):
 - Directly matches sender's intent
-- Evidence-grounded
-- Confidence: 0.7–1.0
+- Evidence-grounded from person_specific or company_specific sources
+- Confidence: 0.7–1.0 for person_specific sources, 0.5–0.7 for company_specific
 
 Tier 2 — Adjacent hooks (if Tier 1 yields 0):
 - About recipient's background, leadership, domain, or public work
 - Loosely adjacent to sender intent
-- Evidence-grounded
-- Confidence: 0.35–0.65
+- Evidence-grounded from person_specific or company_specific sources
+- Confidence: 0.35–0.65 for person_specific sources, 0.25–0.5 for company_specific
 
 Tier 3 — Identity/role hooks (if Tier 2 yields 0):
 - What they do, their remit, or notable "about" facts
-- Evidence-grounded
-- Confidence: 0.15–0.35
+- Evidence-grounded from person_specific or company_specific sources
+- Confidence: 0.15–0.35 for person_specific sources, 0.1–0.25 for company_specific
+
+CONFIDENCE SCORING:
+confidence = strength of evidence that this hook is TRUE about ${name}
+- 0.8-1.0: Direct quote mentioning ${name} by name with specific details
+- 0.5-0.7: ${name} mentioned + context, OR ${company} context directly related to ${name}'s role
+- 0.3-0.5: ${company} information that provides context for ${name}'s work
+- <0.3: Weak connection (avoid unless tier3 fallback)
 
 You MUST return at least 1 hook. If you cannot find Tier 1, use Tier 2. If you cannot find Tier 2, use Tier 3.
 
