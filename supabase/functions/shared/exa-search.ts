@@ -1,5 +1,5 @@
 // Exa Search + Contents API implementation for phased research
-import { discoverContentWithAutoprompt } from './discovery-autoprompt.ts';
+import { discoverContentMultiAngle } from './discovery-multi-angle.ts';
 
 export interface IdentityResult {
   identityDecision: 'PASS' | 'FAIL';
@@ -419,7 +419,7 @@ Example: ["query 1", "query 2", "query 3", "query 4", "query 5"]`;
   }
 }
 
-// Phase 2: Content Discovery (with improved autoprompt + scoring)
+// Phase 2: Content Discovery (multi-angle autoprompt, no hypotheses)
 export async function discoverContent(params: {
   name: string;
   company: string;
@@ -430,50 +430,40 @@ export async function discoverContent(params: {
   geminiApiKey: string;
   identityConfidence?: number;
 }): Promise<ContentDiscoveryResult> {
-  const { name, company, role, senderIntent, credibilityStory, exaApiKey, geminiApiKey, identityConfidence } = params;
+  const { name, company, role, senderIntent, exaApiKey, geminiApiKey } = params;
 
-  console.log(`[discoverContent] Starting discovery for ${name} at ${company}`);
+  console.log(`[discoverContent] Starting multi-angle discovery for ${name} at ${company}`);
 
-  // Generate smart search hypotheses using Gemini
-  const hypotheses = await generateSearchHypotheses({
-    name,
-    company,
-    role,
-    senderIntent,
-    credibilityStory,
-    geminiApiKey,
-    identityConfidence
-  });
-
-  // Use improved autoprompt-based discovery with scoring
-  const discoveryResult = await discoverContentWithAutoprompt({
+  // Use multi-angle autoprompt discovery (no hypotheses generation)
+  const discoveryResult = await discoverContentMultiAngle({
     name,
     company,
     role,
     senderIntent: senderIntent || '',
     exaApiKey,
-    geminiApiKey,
-    hypotheses
+    geminiApiKey
   });
 
   // Log debug info
-  console.log(`[discoverContent] Topics extracted:`, discoveryResult.debug.topics);
+  console.log(`[discoverContent] Normalized intent: "${discoveryResult.debug.normalizedIntent.compressed}"`);
+  console.log(`[discoverContent] Entities:`, discoveryResult.debug.normalizedIntent.entities);
+  console.log(`[discoverContent] Angle distribution:`, discoveryResult.debug.angleDistribution);
   console.log(`[discoverContent] Dropped ${discoveryResult.debug.dropped.length} URLs`);
   console.log(`[discoverContent] Top 5 scores:`, discoveryResult.debug.topScores.slice(0, 5));
 
   // Convert to expected format
-  const urls = discoveryResult.urls.map((r, i) => ({
+  const urls = discoveryResult.urls.map((r) => ({
     id: r.url,
     url: r.url,
     title: r.title,
     score: discoveryResult.debug.topScores.find(s => s.url === r.url)?.score ?? 0,
-    source: r.source
+    source: r.angle // Use angle as source
   }));
 
   return {
     urls,
     foundCount: discoveryResult.urls.length,
-    hypotheses
+    hypotheses: [] // No longer using hypotheses
   };
 }
 
